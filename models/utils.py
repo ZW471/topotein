@@ -152,3 +152,58 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
         raise ValueError(f"Invalid rank: {rank}, available ranks are 0, 1, 2")
 
     return frames
+
+
+def scalarize(vector_reps: torch.Tensor, frames: torch.Tensor, flatten: bool = True) -> torch.Tensor:
+    """
+    Computes a scalarized representation by applying the Einstein summation
+    convention on the input tensors. Optionally, flattens the resulting
+    tensor along specified dimensions or transposes specific axes based on
+    the input flag.
+
+    :param vector_reps: A tensor containing the vector representations. The
+       dimensions and shape of this tensor should match that required for
+       the Einstein summation with `frames`.
+    :type vector_reps: torch.Tensor
+    :param frames: A tensor containing frame data for the Einstein
+       summation. The dimensions and shape of this tensor should match that
+       required for the operation with `vector_reps`.
+    :type frames: torch.Tensor
+    :param flatten: A boolean flag determining whether the resulting tensor
+       should be flattened starting from the second-to-last dimension (-2).
+       If set to False, the tensor is instead transposed between the last
+       and second-to-last dimensions.
+    :type flatten: bool
+    :return: The scalarized tensor as a result of the Einstein summation,
+       either flattened or transposed based on the `flatten` flag.
+    :rtype: torch.Tensor
+    """
+    result = torch.einsum('...mn,...mk->...nk', vector_reps, frames)
+    if flatten:
+        result = result.flatten(start_dim=-2)
+    else:
+        result = result.transpose(-1, -2)
+    return result
+
+
+def tensorize(scalarized_reps: torch.Tensor, frames: torch.Tensor, flattened: bool = False) -> torch.Tensor:
+    """
+    Reverse the scalarization process to recover the vector representations.
+
+    Parameters:
+      scalarized_reps (Tensor): The scalarized tensor. Depending on `flatten`, its shape is either
+                                (..., m, n) if flatten is False, or flattened along the second last dimension.
+      frames (Tensor): The local frames of shape (..., m, m) (assumed square and orthonormal).
+      flatten (bool):  Whether the scalarized representation is flattened along its last two dims.
+
+    Returns:
+      Tensor: The reconstructed vector representation of shape (..., m, n).
+    """
+    # If the scalarized representation was flattened, we need to unflatten it.
+    if flattened:
+        scalarized_reps = scalarized_reps.view(scalarized_reps.shape[0], -1, 3).transpose(-1, -2)
+
+    # In the scalarize function with flatten=False, the result was transposed so that
+    # its shape is (..., m, n). We now reverse the operation by combining the frame vectors:
+    vector_reps = torch.einsum('...mk,...kn->...mn', frames, scalarized_reps)
+    return vector_reps
