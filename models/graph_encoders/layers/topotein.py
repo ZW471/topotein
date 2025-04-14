@@ -187,14 +187,14 @@ class BackboneEncoder(nn.Module):
         self.encoder = GCPNetModel(module_cfg=gcpnet_cfg["module_cfg"], model_cfg=gcpnet_cfg["model_cfg"], layer_cfg=gcpnet_cfg["layer_cfg"])
         if pretrained_ckpt is not None:
             encoder_weights = collections.OrderedDict()
-            state_dict = torch.load(pretrained_ckpt, weights_only=False, map_location="cpu")["state_dict"]
+            state_dict = torch.load(pretrained_ckpt, weights_only=False)["state_dict"]
             for k, v in state_dict.items():
                 if k.startswith("encoder"):
                     encoder_weights[k.replace("encoder.", "")] = v
             self.encoder.load_state_dict(encoder_weights, strict=False)
 
-        if freeze_encoder:
-            self.encoder.requires_grad_(False)
+            if freeze_encoder:
+                self.encoder.requires_grad_(False)
 
     def forward(self, batch, rank):
         if rank == 2:

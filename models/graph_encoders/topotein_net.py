@@ -16,7 +16,7 @@ class TopoteinNetModel(nn.Module):
     def required_batch_attributes(self) -> List[str]:
         return ["edge_index", "pos", "x", "batch"]
 
-    def __init__(self, in_dims_dict=None, out_dims_dict=None, num_layers=6, backbone_encoder_ckpt=None, freeze_backbone_encoder=False, activation="silu", **kwargs):
+    def __init__(self, in_dims_dict=None, out_dims_dict=None, num_layers=6, backbone_encoder_ckpt=None, freeze_backbone_encoder=True, activation="silu", **kwargs):
         super().__init__()
 
         assert all(
@@ -64,8 +64,8 @@ class TopoteinNetModel(nn.Module):
         self.backbone_encoder = BackboneEncoder(
             in_dims_dict=self.in_dims_dict,
             out_dims_dict=self.out_dims_dict,
-            num_layers=num_layers,
-            pretrained_ckpt=backbone_encoder_ckpt,
+            num_layers=self.num_layers,
+            pretrained_ckpt=self.backbone_encoder_ckpt,
             freeze_encoder=freeze_backbone_encoder
         )
 
