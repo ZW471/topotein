@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from beartype.typing import Optional, Tuple, Union
 
 import torch
 import torch_scatter
@@ -8,6 +8,13 @@ from jaxtyping import Bool, jaxtyped
 from torch_geometric.data import Batch
 from torch_scatter import scatter_mean
 
+from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
+
+DEFAULT_RANK_MAPPING = {
+    0: ScalarVector('x', 'x_vector_attr'),
+    1: ScalarVector('edge_attr', 'edge_vector_attr'),
+    2: ScalarVector('sse_attr', 'sse_vector_attr')
+}
 
 @jaxtyped(typechecker=typechecker)
 def centralize(
@@ -207,3 +214,20 @@ def tensorize(scalarized_reps: torch.Tensor, frames: torch.Tensor, flattened: bo
     # its shape is (..., m, n). We now reverse the operation by combining the frame vectors:
     vector_reps = torch.einsum('...mk,...kn->...mn', frames, scalarized_reps)
     return vector_reps
+
+def to_sse_batch(batch: ProteinBatch):
+    batch.node_frames = localize(batch, 0)
+    batch.edge_frames = localize(batch, 1)
+
+    batch.B0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
+    sse_batch = Batch(batch=batch.B0_2.indices()[1], sse_type=batch.sse, num_sse=batch.sse.shape[0])
+
+    for key in ['pos', 'x', 'x_vector_attr', 'node_frames']:
+        sse_batch[key] = batch[key][batch.B0_2.indices()[0]]
+
+    batch.B1_2 = batch.sse_cell_complex.incidence_matrix(from_rank=1, to_rank=2)
+    edges = batch.B1_2.indices()[0][batch.B1_2.indices()[1]]
+    sse_batch['edge_index'] = batch['edge_index'][:, edges]
+    for key in ['edge_attr', 'edge_vector_attr', 'edge_frames']:
+        sse_batch[key] = batch[key][edges]
+    return sse_batch
