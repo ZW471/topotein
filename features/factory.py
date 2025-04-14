@@ -51,6 +51,14 @@ class TopoteinFeaturiser(ProteinFeaturiser):
     def forward(
         self, batch: Union[Batch, ProteinBatch]
     ) -> Union[Batch, ProteinBatch]:
+        
+        if type(batch) != ProteinBatch:
+            # If the input is a Batch, we need to convert it to a ProteinBatch
+            pr_batch = ProteinBatch()
+            batch = pr_batch.from_batch(batch)
+            # log.warning(
+            #     f"Converting Batch to ProteinBatch. Batch size: {batch.batch_size} {type(batch)}"
+            # )
 
         batch.sse = sse_onehot(batch)  # this is node sse
 
@@ -168,6 +176,3 @@ if __name__ == "__main__":
     print(batch, f'featurising time: {time.time() - tik}s')
 
     # torch.save(batch, '../../../test/data/sample_batch/sample_batch_for_tcp.pt')
-
-
-
