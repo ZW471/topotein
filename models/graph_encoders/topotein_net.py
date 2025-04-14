@@ -64,7 +64,7 @@ class TopoteinNetModel(nn.Module):
         self.backbone_encoder = BackboneEncoder(
             in_dims_dict=self.in_dims_dict,
             out_dims_dict=self.out_dims_dict,
-            num_layers=self.num_layers,
+            num_layers=kwargs.get("backbone_num_layers", 6),
             pretrained_ckpt=self.backbone_encoder_ckpt,
             freeze_encoder=freeze_backbone_encoder
         )
@@ -214,7 +214,7 @@ class TopoteinNetModel(nn.Module):
             ScalarVector(h, chi)
         )  # e.g., GCPLayerNorm()
         out = self.invariant_node_projection[1](
-            out, batch.edge_index, batch.f_ij, node_inputs=True
+            out, batch.edge_index, batch.frame_dict[1], node_inputs=True
         )  # e.g., GCP((h, chi)) -> h'
 
         encoder_outputs = {"node_embedding": out, "graph_embedding": self.readout(
