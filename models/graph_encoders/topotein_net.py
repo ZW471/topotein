@@ -64,7 +64,7 @@ class TopoteinNetModel(nn.Module):
         self.backbone_encoder = BackboneEncoder(
             in_dims_dict=self.in_dims_dict,
             out_dims_dict=self.out_dims_dict,
-            num_layers=self.num_layers,
+            num_layers=kwargs.get("backbone_num_layers", 6),
             pretrained_ckpt=self.backbone_encoder_ckpt,
             freeze_encoder=freeze_backbone_encoder
         )
