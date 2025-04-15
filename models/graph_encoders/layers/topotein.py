@@ -187,7 +187,10 @@ class BackboneEncoder(nn.Module):
         self.encoder = GCPNetModel(module_cfg=gcpnet_cfg["module_cfg"], model_cfg=gcpnet_cfg["model_cfg"], layer_cfg=gcpnet_cfg["layer_cfg"])
         if pretrained_ckpt is not None:
             encoder_weights = collections.OrderedDict()
-            state_dict = torch.load(pretrained_ckpt, weights_only=False)["state_dict"]
+            try:
+                state_dict = torch.load(pretrained_ckpt, weights_only=False)["state_dict"]
+            except RuntimeError:
+                state_dict = torch.load(pretrained_ckpt, weights_only=False, map_location='cpu')["state_dict"]
             for k, v in state_dict.items():
                 if k.startswith("encoder"):
                     encoder_weights[k.replace("encoder.", "")] = v
