@@ -189,6 +189,7 @@ class TopoteinNetModel(nn.Module):
         # return ScalarVector(torch.zeros(pr_emb.shape[0], 1), pr_emb)
 
     def forward(self, batch):
+        pos_centroid, batch.pos = self.centralize(batch, batch_index=batch.batch)
         batch.frame_dict = {i: localize(batch, rank=i) for i in range(3)}
 
         (c, rho) = self.get_sse_emb(batch)
