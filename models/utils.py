@@ -1,3 +1,5 @@
+from functools import partial
+
 from beartype.typing import Optional, Tuple, Union
 
 import torch
@@ -9,6 +11,7 @@ from torch_geometric.data import Batch
 from torch_scatter import scatter_mean
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
+from proteinworkshop.models.utils import safe_norm
 
 DEFAULT_RANK_MAPPING = {
     0: ScalarVector('x', 'x_vector_attr'),
@@ -104,35 +107,43 @@ def map_to_cell_index(edge_index: torch.Tensor, node_to_sse_mapping: torch.Tenso
     cell_edge_index = torch.stack([sse_lookup[edge_index[i]] for i in range(2)], dim=0)
     return cell_edge_index
 
-def get_com(positions, cluster_ids=None):
+def get_com(positions, cluster_ids=None, cluster_num=None):
     if cluster_ids is None:
         return torch.mean(positions, dim=0, keepdim=True)
     else:
-        return scatter_mean(positions, cluster_ids, dim=0)
+        return scatter_mean(positions, cluster_ids, dim=0, dim_size=cluster_num)
 
 def get_frames(X_src, X_dst, normalize=True):
-    a_vec = X_src - X_dst
-    b_vec = torch.linalg.cross(X_src, X_dst)
+    # note that when X_src and X_dst is too close to each other, the frame is not accurate, same applies when X is [0, 0, 0]
+    norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1) if normalize else x
 
-    if normalize:
-        a_vec = a_vec / (torch.linalg.norm(a_vec, dim=1, keepdim=True) + 1)
-        b_vec = b_vec / (torch.linalg.norm(b_vec, dim=1, keepdim=True) + 1)
+    a_vec = norm(X_src - X_dst)
+    b_vec = norm(torch.linalg.cross(X_src, X_dst))
+    c_vec = norm(torch.linalg.cross(a_vec, b_vec))
 
-    c_vec = torch.linalg.cross(a_vec, b_vec)
     return torch.stack([a_vec, b_vec, c_vec], dim=1)
 
 def localize(batch, rank, node_mask=None, norm_pos_diff=True):
+    num_of_frames = batch.sse_cell_complex._get_size_of_rank(rank)
     frames = (
-            torch.ones((batch.sse_cell_complex._get_size_of_rank(rank), 3, 3), device=batch.pos.device)
+            torch.ones((num_of_frames, 3, 3), device=batch.pos.device)
             * torch.inf
     )
     if rank == 0:
         if node_mask is not None:
             dst_node_mask = node_mask[batch.edge_index[1]]
-            neighbor_com = get_com(batch.pos[batch.edge_index[1]][dst_node_mask], batch.edge_index[0][dst_node_mask])
+            neighbor_com = get_com(
+                positions=batch.pos[batch.edge_index[1]][dst_node_mask],
+                cluster_ids=batch.edge_index[0][dst_node_mask],
+                cluster_num=num_of_frames
+            )
             frames[node_mask] = get_frames(X_src=batch.pos[node_mask], X_dst=neighbor_com[node_mask], normalize=norm_pos_diff)
         else:
-            neighbor_com = get_com(batch.pos[batch.edge_index[1]], batch.edge_index[0])
+            neighbor_com = get_com(
+                positions=batch.pos[batch.edge_index[1]],
+                cluster_ids=batch.edge_index[0],
+                cluster_num=num_of_frames
+            )
             frames = get_frames(X_src=batch.pos, X_dst=neighbor_com, normalize=norm_pos_diff)
     elif rank == 1:
         if node_mask is not None:
@@ -148,12 +159,20 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
         if node_mask is not None:
             in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
             pr_com = get_com(batch.pos[node_mask])
-            sse_com = get_com(batch.pos_in_sse[in_sse_node_mask], batch.N0_2.indices()[1][in_sse_node_mask])
+            sse_com = get_com(
+                positions=batch.pos_in_sse[in_sse_node_mask],
+                cluster_ids=batch.N0_2.indices()[1][in_sse_node_mask],
+                cluster_num=num_of_frames
+            )
             sse_mask = get_com(batch.pos_in_sse[in_sse_node_mask].abs(), batch.N0_2.indices()[1][in_sse_node_mask]) != 0.0
             frames[sse_mask] = get_frames(X_src=sse_com, X_dst=pr_com, normalize=norm_pos_diff)[sse_mask]
         else:
             pr_com = get_com(batch.pos)
-            sse_com = get_com(batch.pos_in_sse, batch.N0_2.indices()[1])
+            sse_com = get_com(
+                positions=batch.pos_in_sse,
+                cluster_ids=batch.N0_2.indices()[1],
+                cluster_num=num_of_frames
+            )
             frames = get_frames(X_src=sse_com, X_dst=pr_com, normalize=norm_pos_diff)
     else:
         raise ValueError(f"Invalid rank: {rank}, available ranks are 0, 1, 2")
