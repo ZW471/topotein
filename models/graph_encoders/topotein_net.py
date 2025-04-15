@@ -66,7 +66,7 @@ class TopoteinNetModel(nn.Module):
             out_dims_dict=self.out_dims_dict,
             num_layers=kwargs.get("backbone_num_layers", 6),
             pretrained_ckpt=self.backbone_encoder_ckpt,
-            freeze_encoder=freeze_backbone_encoder
+            freeze_encoder=self.freeze_backbone_encoder
         )
 
         # SSE embedding functions
