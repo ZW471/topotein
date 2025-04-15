@@ -4,7 +4,7 @@ from torch import nn
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.graph_encoders.layers import gcp
-from proteinworkshop.models.utils import get_activations, get_aggregation
+from proteinworkshop.models.utils import get_activations, get_aggregation, centralize
 from proteinworkshop.types import EncoderOutput
 from topotein.models.graph_encoders.layers.tcp import TCPInteractions
 from topotein.models.graph_encoders.layers.topotein import BackboneEncoder, TPPEmbedding
@@ -189,7 +189,7 @@ class TopoteinNetModel(nn.Module):
         # return ScalarVector(torch.zeros(pr_emb.shape[0], 1), pr_emb)
 
     def forward(self, batch):
-        pos_centroid, batch.pos = self.centralize(batch, batch_index=batch.batch)
+        pos_centroid, batch.pos = centralize(batch, batch_index=batch.batch, key="pos")
         batch.frame_dict = {i: localize(batch, rank=i) for i in range(3)}
 
         (c, rho) = self.get_sse_emb(batch)
