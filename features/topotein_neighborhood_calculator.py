@@ -18,7 +18,7 @@ def parse_variable(var_name: str):
       - rank2: the second digit as an integer
     """
     if len(var_name) != 4 or var_name[2] != '_':
-        raise ValueError(f"Invalid variable format: {var_name}. Expected format: [A|B|L][0-2]_[0-2]")
+        raise ValueError(f"Invalid variable format: {var_name}. Expected format: [A|B|L][0-3]_[0-3]")
     letter = var_name[0]
     rank1 = int(var_name[1])
     rank2 = int(var_name[3])
@@ -183,12 +183,15 @@ if __name__ == "__main__":
     complex_instance = TopoteinComplex(num_nodes, edge_index, cell_index, use_cache=True)
     calculator = TopoteinNeighborhoodCalculator(complex_instance)
     equations = [
-        "N0_1_from_B = B0_1 @ B0_1.T / 2",
+        # "N0_1_from_B = B0_1 @ B0_1.T",
         "N0_1_from_L = L0_1",
-        "B1_2 = B1_2",
-        "N0_2 = B0_2",
-        "N0_3 = B0_3",
-        "N2_3 = B2_3"
+        "N1_0_from_L = L1_0",
+        # "N0_1 = B0_1"
+        # "B1_2 = B1_2",
+        # "N0_2 = B0_2",
+        # "N0_3 = B0_3",
+        # "N2_3 = B2_3",
+        # "N0_1 = A0_1"
     ]
     import time
     tik = time.time()

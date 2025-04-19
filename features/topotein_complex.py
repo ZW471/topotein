@@ -158,11 +158,11 @@ class TopoteinComplex:
         if rank < via_rank:
             result = torch.sparse.mm(
                 self.incidence_matrix(from_rank=rank, to_rank=via_rank),
-                self.incidence_matrix(from_rank=rank, to_rank=via_rank).T.coalesce()
+                self.incidence_matrix(from_rank=rank, to_rank=via_rank, direction_inv=True).T.coalesce()
             )
         else:
             result = torch.sparse.mm(
-                self.incidence_matrix(from_rank=via_rank, to_rank=rank).T.coalesce(),
+                self.incidence_matrix(from_rank=via_rank, to_rank=rank, direction_inv=True).T.coalesce(),
                 self.incidence_matrix(from_rank=via_rank, to_rank=rank)
             )
 
@@ -184,8 +184,9 @@ class TopoteinComplex:
 
         return result
 
-    def incidence_matrix(self, from_rank, to_rank):
-        cache = self._read_neighborhood_cache(neighborhood_type='B', rank=from_rank, to_rank=to_rank)
+    def incidence_matrix(self, from_rank, to_rank, direction_inv=False):
+        neighborhood_type = 'B' if not direction_inv else 'B_inv'
+        cache = self._read_neighborhood_cache(neighborhood_type=neighborhood_type, rank=from_rank, to_rank=to_rank)
         if cache is not None:
             return cache
 
@@ -202,7 +203,7 @@ class TopoteinComplex:
         from_rank_size, to_rank_size = self._get_size_of_rank(from_rank), self._get_size_of_rank(to_rank)
         if to_rank == 1:
             if from_rank == 0:
-                col = self.edge_index[0]
+                col = self.edge_index[0] if not direction_inv else self.edge_index[1]
                 row = torch.arange(self.num_edges, device=self.device)
         elif to_rank == 2:
             if from_rank == 0:
@@ -251,6 +252,6 @@ class TopoteinComplex:
             dtype=torch.float
         ).coalesce()
 
-        self._write_neighborhood_cache(neighborhood_type='B', rank=from_rank, to_rank=to_rank, neighborhood=result)
+        self._write_neighborhood_cache(neighborhood_type=neighborhood_type, rank=from_rank, to_rank=to_rank, neighborhood=result)
 
         return result
