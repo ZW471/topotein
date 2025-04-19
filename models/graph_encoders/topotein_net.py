@@ -7,7 +7,8 @@ from proteinworkshop.models.graph_encoders.layers import gcp
 from proteinworkshop.models.utils import get_activations, get_aggregation, centralize
 from proteinworkshop.types import EncoderOutput
 from topotein.models.graph_encoders.layers.tcp import TCPInteractions
-from topotein.models.graph_encoders.layers.topotein import BackboneEncoder, TPPEmbedding
+from topotein.models.graph_encoders.layers.topotein_net.backbone_encoder import BackboneEncoder
+from topotein.models.graph_encoders.layers.topotein_net.embedding import TPPEmbedding
 from topotein.models.utils import tensorize, localize
 
 
@@ -62,6 +63,14 @@ class TopoteinNetModel(nn.Module):
         self.activation_name = self.activation
         self.activation = get_activations(self.activation)
         self.backbone_encoder = BackboneEncoder(
+            in_dims_dict=self.in_dims_dict,
+            out_dims_dict=self.out_dims_dict,
+            num_layers=kwargs.get("backbone_num_layers", 6),
+            pretrained_ckpt=self.backbone_encoder_ckpt,
+            freeze_encoder=self.freeze_backbone_encoder
+        )
+
+        self.backbone_encoder_sse = BackboneEncoder(
             in_dims_dict=self.in_dims_dict,
             out_dims_dict=self.out_dims_dict,
             num_layers=kwargs.get("backbone_num_layers", 6),
@@ -159,7 +168,7 @@ class TopoteinNetModel(nn.Module):
 
     def get_sse_emb(self, batch):
         sse_s, sse_v = self.sse_emb(batch)[2]
-        sse_emb = self.backbone_encoder(batch, rank=2)['graph_embedding']
+        sse_emb = self.backbone_encoder_sse(batch, rank=2)['graph_embedding']
         sse_s = torch.cat([
             sse_s,
             self.sse_scalar_pre_recon(sse_emb),

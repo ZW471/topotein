@@ -8,7 +8,7 @@ from beartype import beartype as typechecker
 from graphein.protein.tensor.data import ProteinBatch
 from jaxtyping import Bool, jaxtyped
 from torch_geometric.data import Batch
-from torch_scatter import scatter_mean
+from torch_scatter import scatter_mean, scatter
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.utils import safe_norm
@@ -254,3 +254,26 @@ def to_sse_batch(batch: ProteinBatch):
     for key in ['edge_attr', 'edge_vector_attr', 'edge_frames']:
         sse_batch[key] = batch[key][edges]
     return sse_batch
+
+
+def sv_scatter(sv: ScalarVector, indices, dim_size, reduce="sum") -> ScalarVector:
+    vec_dim = sv.vector.shape[1]
+    sv_flattened = sv.flatten()[indices[0]]
+    sv_flattened = scatter(
+        sv_flattened,
+        indices[1],
+        dim=0,
+        dim_size=dim_size,
+        reduce=reduce
+    )
+    sv = ScalarVector.recover(sv_flattened, vec_dim)
+    return sv
+
+
+def sv_aggregate(sv: ScalarVector, neighborhood_matrix, reduce="sum") -> ScalarVector:
+    return sv_scatter(
+        sv,
+        neighborhood_matrix.indices(),
+        dim_size=neighborhood_matrix.size(-1),
+        reduce=reduce
+    )

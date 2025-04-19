@@ -155,16 +155,19 @@ class TopoteinComplex:
         if rank == via_rank:
             raise ValueError(f'Invalid rank: rank={rank} equals via_rank={via_rank}')
 
-        if rank < via_rank:
-            result = torch.sparse.mm(
-                self.incidence_matrix(from_rank=rank, to_rank=via_rank),
-                self.incidence_matrix(from_rank=rank, to_rank=via_rank, direction_inv=True).T.coalesce()
-            )
+        # i < j
+        i = min(rank, via_rank)
+        j = max(rank, via_rank)
+        B_i_j = self.incidence_matrix(from_rank=i, to_rank=j)
+        if j == 1 and i == 0:
+            B_j_i = self.incidence_matrix(from_rank=j, to_rank=i)
         else:
-            result = torch.sparse.mm(
-                self.incidence_matrix(from_rank=via_rank, to_rank=rank, direction_inv=True).T.coalesce(),
-                self.incidence_matrix(from_rank=via_rank, to_rank=rank)
-            )
+            B_j_i = self.incidence_matrix(from_rank=i, to_rank=j).T.coalesce()
+
+        if rank > via_rank:
+            B_i_j, B_j_i = B_j_i, B_i_j
+
+        result = torch.sparse.mm(B_i_j, B_j_i)
 
         self._write_neighborhood_cache(neighborhood_type='L', rank=rank, to_rank=via_rank, neighborhood=result)
 
@@ -184,26 +187,32 @@ class TopoteinComplex:
 
         return result
 
-    def incidence_matrix(self, from_rank, to_rank, direction_inv=False):
-        neighborhood_type = 'B' if not direction_inv else 'B_inv'
+    def incidence_matrix(self, from_rank, to_rank):
+        neighborhood_type = 'B'
         cache = self._read_neighborhood_cache(neighborhood_type=neighborhood_type, rank=from_rank, to_rank=to_rank)
         if cache is not None:
             return cache
 
-        if from_rank > to_rank:
-            raise ValueError(f'Invalid rank: from_rank={from_rank} > to_rank={to_rank}')
+        if from_rank > to_rank and not (from_rank == 1 and to_rank == 0):
+            raise ValueError(f'Invalid rank: from_rank={from_rank} > to_rank={to_rank} and not (from_rank=1 and to_rank=0)')
 
         supported_ranks = [0, 1, 2, 3]
-        if from_rank not in supported_ranks[:-1]:
-            raise ValueError(f'Invalid rank: from_rank={from_rank}, supported ranks: {supported_ranks}')
-        if to_rank not in supported_ranks[1:]:
-            raise ValueError(f'Invalid rank: to_rank={to_rank}, supported ranks: {supported_ranks}')
+        if not (from_rank == 1 and to_rank == 0):
+            if from_rank not in supported_ranks[:-1]:
+                raise ValueError(f'Invalid rank: from_rank={from_rank}, supported ranks: {supported_ranks}')
+            if to_rank not in supported_ranks[1:]:
+                raise ValueError(f'Invalid rank: to_rank={to_rank}, supported ranks: {supported_ranks}')
 
         row, col = None, None
         from_rank_size, to_rank_size = self._get_size_of_rank(from_rank), self._get_size_of_rank(to_rank)
-        if to_rank == 1:
+        if to_rank == 0:
+            if from_rank == 1:
+                # this is needed to allow directions in edges
+                col = torch.arange(self.num_edges, device=self.device)
+                row = self.edge_index[1]
+        elif to_rank == 1:
             if from_rank == 0:
-                col = self.edge_index[0] if not direction_inv else self.edge_index[1]
+                col = self.edge_index[0]
                 row = torch.arange(self.num_edges, device=self.device)
         elif to_rank == 2:
             if from_rank == 0:
