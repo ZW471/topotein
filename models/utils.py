@@ -8,7 +8,7 @@ from beartype import beartype as typechecker
 from graphein.protein.tensor.data import ProteinBatch
 from jaxtyping import Bool, jaxtyped
 from torch_geometric.data import Batch
-from torch_scatter import scatter_mean, scatter
+from torch_scatter import scatter_mean, scatter, scatter_max
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.utils import safe_norm
@@ -158,28 +158,43 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
     elif rank == 2:
         if not hasattr(batch, 'N0_2'):
             batch.N0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
+        if not hasattr(batch, 'N2_3'):
+            batch.N2_3 = batch.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
         if not hasattr(batch, 'pos_in_sse'):
             batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
         if node_mask is not None:
             in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
-            pr_com = get_com(batch.pos[node_mask])
+            pr_com = get_com(batch.pos[node_mask], cluster_ids=batch.batch[node_mask], cluster_num=len(batch.id))
             sse_com = get_com(
                 positions=batch.pos_in_sse[in_sse_node_mask],
                 cluster_ids=batch.N0_2.indices()[1][in_sse_node_mask],
                 cluster_num=num_of_frames
             )
             sse_mask = get_com(batch.pos_in_sse[in_sse_node_mask].abs(), batch.N0_2.indices()[1][in_sse_node_mask]) != 0.0
-            frames[sse_mask] = get_frames(X_src=sse_com, X_dst=pr_com, normalize=norm_pos_diff)[sse_mask]
+            frames[sse_mask] = get_frames(X_src=sse_com, X_dst=pr_com[batch.N2_3.indices()[1]], normalize=norm_pos_diff)[sse_mask]
         else:
-            pr_com = get_com(batch.pos)
+            pr_com = get_com(batch.pos, cluster_ids=batch.batch, cluster_num=len(batch.id))
             sse_com = get_com(
                 positions=batch.pos_in_sse,
                 cluster_ids=batch.N0_2.indices()[1],
                 cluster_num=num_of_frames
             )
-            frames = get_frames(X_src=sse_com, X_dst=pr_com, normalize=norm_pos_diff)
+            frames = get_frames(X_src=sse_com, X_dst=pr_com[batch.N2_3.indices()[1]], normalize=norm_pos_diff)
+    elif rank == 3:
+        if node_mask is not None:
+            pr_com = get_com(batch.pos[node_mask], cluster_ids=batch.batch[node_mask], cluster_num=len(batch.id))
+            d2 = ((batch.pos[node_mask] - pr_com[batch.batch][node_mask])**2).sum(dim=1)
+            max_vals, max_idx = scatter_max(d2, batch.batch[node_mask], dim=0)
+            farthest = batch.pos[node_mask][max_idx]
+            frames = get_frames(X_src=pr_com, X_dst=farthest, normalize=norm_pos_diff)
+        else:
+            pr_com = get_com(batch.pos, cluster_ids=batch.batch, cluster_num=len(batch.id))
+            d2 = ((batch.pos - pr_com[batch.batch])**2).sum(dim=1)
+            max_vals, max_idx = scatter_max(d2, batch.batch, dim=0)
+            farthest = batch.pos[max_idx]
+            frames = get_frames(X_src=pr_com, X_dst=farthest, normalize=norm_pos_diff)
     else:
-        raise ValueError(f"Invalid rank: {rank}, available ranks are 0, 1, 2")
+        raise ValueError(f"Invalid rank: {rank}, available ranks are 0, 1, 2, 3")
 
     return frames
 

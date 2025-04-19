@@ -109,21 +109,25 @@ def map_edges_to_cells_searchsorted(edge_indices: torch.Tensor, cell_indices: to
     return mapping
 
 class TopoteinComplex:
-    def __init__(self, num_nodes, edge_index, cell_index, use_cache=True):
+    def __init__(self, num_nodes, edge_index, cell_index, num_proteins=None, protein_batch=None, use_cache=True):
         self.device = edge_index.device
 
         self.num_nodes = num_nodes
         self.num_edges = edge_index.shape[1]
         self.num_cells = cell_index.shape[1]
-        self.num_proteins = 1
+        self.num_proteins = num_proteins
 
         self.nodes = torch.arange(num_nodes, device=self.device)
         self.edge_index = edge_index
         self.cell_index = cell_index
-        self.proteins = self.nodes.unsqueeze(0)
+        self.protein_batch = protein_batch
 
         self.use_cache = use_cache
         self.cache = {}
+
+    def set_proteins(self, num_proteins, protein_batch):
+        self.num_proteins = num_proteins
+        self.protein_batch = protein_batch
 
     def _read_neighborhood_cache(self, neighborhood_type, rank, to_rank):
         if self.use_cache and f'{neighborhood_type}_{rank}_{to_rank}' in self.cache:
@@ -196,7 +200,7 @@ class TopoteinComplex:
         if from_rank > to_rank and not (from_rank == 1 and to_rank == 0):
             raise ValueError(f'Invalid rank: from_rank={from_rank} > to_rank={to_rank} and not (from_rank=1 and to_rank=0)')
 
-        supported_ranks = [0, 1, 2, 3]
+        supported_ranks = [0, 1, 2, 3] if self.protein_batch is not None else [0, 1, 2]
         if not (from_rank == 1 and to_rank == 0):
             if from_rank not in supported_ranks[:-1]:
                 raise ValueError(f'Invalid rank: from_rank={from_rank}, supported ranks: {supported_ranks}')
@@ -246,12 +250,13 @@ class TopoteinComplex:
         elif to_rank == 3:
             if from_rank == 0:
                 col = self.nodes
+                row = self.protein_batch
             elif from_rank == 1:
                 col = torch.arange(self.num_edges, device=self.device)
+                row = self.protein_batch[self.edge_index[0]]
             elif from_rank == 2:
                 col = torch.arange(self.num_cells, device=self.device)
-
-            row = torch.zeros_like(col, device=self.device, dtype=torch.float)
+                row = self.protein_batch[self.cell_index[0]]
 
         result = torch.sparse_coo_tensor(
             indices=torch.stack([col, row], dim=0),

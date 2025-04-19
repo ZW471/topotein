@@ -85,26 +85,47 @@ class TopoteinMessagePassing(nn.Module):
         super().__init__(**kwargs)
         self.in_dim_dict = in_dim_dict
         self.out_dim_dict = out_dim_dict
-        self.mapping_dict = {0: [0, 1, 2], 1: [0, 2], 2: [0]} #{0: [1, 2], 1: [0], 2: [0, 3], 3: [2]}
+        self.mapping_dict = {0: [1, 2, 3], 1: [0], 2: [0, 3], 3: [2]}
         self.gmp = GeometricMessagePassing(
-            in_dim_dict=in_dim_dict,
-            out_dim_dict=out_dim_dict,
-            mapping_dict=mapping_dict,
+            in_dim_dict=self.in_dim_dict,
+            out_dim_dict=self.out_dim_dict,
+            mapping_dict=self.mapping_dict,
             agg_reduce='sum',
             frame_selection='target',
             activation='silu'
         )
+        self.rank_mapping_dict = {
+            0: ScalarVector('h', 'chi'),
+            1: ScalarVector('e', 'xi'),
+            2: ScalarVector('c', 'rho'),
+            3: ScalarVector('p', 'pi'),
+        }
 
-    def forward(self, X_dict, neighborhood_dict, frame_dict):
-        updates = self.gmp(X_dict, neighborhood_dict, frame_dict)
+
+    def forward(self, batch):
+        X_dict = batch.embeddings
+        neighborhood_dict = self.get_neighborhood_dict(batch)
+        updates = self.gmp(X_dict, neighborhood_dict, batch.frame_dict)
         for key in X_dict.keys():
             X_dict[key] = X_dict[key] + updates[key]
 
         return X_dict
 
+    def get_neighborhood_dict(self, batch):
+        neighborhood_dict = {}
+        for from_rank in self.mapping_dict.keys():
+            for to_rank in self.mapping_dict[from_rank]:
+                key = f"N{from_rank}_{to_rank}"
+                if hasattr(batch, key):
+                    neighborhood_dict[key] = batch[key]
+                else:
+                    raise KeyError(
+                        f"Neighborhood {key} not found in batch. Please check your configuration and try again.")
+        return neighborhood_dict
 
-#%%
+
 if __name__ == '__main__':
+#%%
     from graphein.protein.tensor.data import ProteinBatch
     from topotein.models.graph_encoders.layers.topotein_net.embedding import TPPEmbedding
     from topotein.models.utils import localize
@@ -114,10 +135,11 @@ if __name__ == '__main__':
         0: ScalarVector(128, 16),
         1: ScalarVector(32, 4),
         2: ScalarVector(64, 8),
-        # 3: ScalarVector(128, 16)
+        3: ScalarVector(128, 16)
     }
     batch: ProteinBatch = torch.load('/Users/dricpro/PycharmProjects/Topotein/test/data/sample_batch/sample_batch_ccc2.pt', weights_only=False).to(device)
-    batch.frame_dict = {i: localize(batch, rank=i) for i in range(3)}
+    batch.sse_cell_complex.set_proteins(32, batch.batch)
+    batch.frame_dict = {i: localize(batch, rank=i) for i in range(4)}
     model = TPPEmbedding(
         in_dims_dict={
             0: ScalarVector(49, 2),
@@ -129,35 +151,38 @@ if __name__ == '__main__':
         bottleneck=1
     )
     embedded = model(batch)
-    # print(embedded)
+    batch.embeddings = embedded
+    batch.embeddings[3] = ScalarVector(
+        torch.randn(32, 128).to(device),
+        torch.randn(32, 16, 3).to(device)
+    )
+    for key in batch.embeddings.keys():
+        print(f"{key}: {batch.embeddings[key].shape}")
 
     #%%
 
     from topotein.features.topotein_neighborhood_calculator import TopoteinNeighborhoodCalculator
-    mapping_dict = {0: [0, 1, 2], 1: [0, 2], 2: [0]}
     nc = TopoteinNeighborhoodCalculator(batch.sse_cell_complex)
     neighborhoods = nc.calc_equations([
-        "N0_0 = L0_1",
+        "N0_3 = B0_3",
         "N0_2 = B0_2",
         "N0_1 = B0_1",
-        "N1_0 = B0_1.T",
-        "N1_2 = B1_2",
+        "N1_0 = B1_0",
         "N2_0 = B0_2.T",
+        "N2_3 = B2_3",
+        "N3_2 = B2_3.T",
     ])
 
-    # model = GeometricMessagePassing(
-    #     in_dim_dict=hidden_dims,
-    #     out_dim_dict=hidden_dims,
-    #     mapping_dict=mapping_dict,
-    #     agg_reduce='sum',
-    #     frame_selection='target',
-    #     activation='silu'
-    # ).to(device)
+    for key, val in neighborhoods.items():
+        batch[key] = val
+
     model = TopoteinMessagePassing(
         in_dim_dict=hidden_dims,
         out_dim_dict=hidden_dims,
     )
-    #%%
-    updates = model(embedded, neighborhoods, batch.frame_dict)
-    print(updates)
+#%%
+    updates = model(batch)
+    print("updates: ")
+    for key in updates.keys():
+        print(f"{key}: {updates[key].shape}")
 
