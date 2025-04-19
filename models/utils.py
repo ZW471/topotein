@@ -118,8 +118,8 @@ def get_frames(X_src, X_dst, normalize=True):
     norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1) if normalize else x
 
     a_vec = norm(X_src - X_dst)
-    b_vec = norm(torch.linalg.cross(X_src, X_dst))
-    c_vec = norm(torch.linalg.cross(a_vec, b_vec))
+    b_vec = norm(torch.cross(X_src, X_dst))
+    c_vec = torch.cross(a_vec, b_vec)
 
     return torch.stack([a_vec, b_vec, c_vec], dim=1)
 
@@ -156,6 +156,10 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
             X_dst = batch.pos[batch.edge_index[1]]
             frames = get_frames(X_src, X_dst, normalize=norm_pos_diff)
     elif rank == 2:
+        if not hasattr(batch, 'N0_2'):
+            batch.N0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
+        if not hasattr(batch, 'pos_in_sse'):
+            batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
         if node_mask is not None:
             in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
             pr_com = get_com(batch.pos[node_mask])

@@ -14,7 +14,7 @@ from graphein.protein.tensor.data import ProteinBatch
 import torch
 from jaxtyping import Bool, Float, Int64, jaxtyped
 
-from topotein.models.utils import centralize, lift_features_with_padding, map_to_cell_index
+from topotein.models.utils import centralize, lift_features_with_padding, map_to_cell_index, get_com
 from omegaconf import DictConfig, OmegaConf
 
 from proteinworkshop.models.utils import localize, safe_norm, get_activations

@@ -66,7 +66,7 @@ grammar = r"""
            | NUMBER             -> number
            | "(" expr ")"       -> group
 
-    VAR: /(A|B|L)[0-2]_[0-2]/
+    VAR: /(A|B|L)[0-3]_[0-3]/
     NUMBER: /\d+(\.\d+)?/
     FUNC: "inv"
     TRANSPOSE: ".T"
@@ -186,7 +186,9 @@ if __name__ == "__main__":
         "N0_1_from_B = B0_1 @ B0_1.T / 2",
         "N0_1_from_L = L0_1",
         "B1_2 = B1_2",
-        "N0_2 = B0_2"
+        "N0_2 = B0_2",
+        "N0_3 = B0_3",
+        "N2_3 = B2_3"
     ]
     import time
     tik = time.time()

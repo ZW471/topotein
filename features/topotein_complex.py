@@ -115,10 +115,12 @@ class TopoteinComplex:
         self.num_nodes = num_nodes
         self.num_edges = edge_index.shape[1]
         self.num_cells = cell_index.shape[1]
+        self.num_proteins = 1
 
         self.nodes = torch.arange(num_nodes, device=self.device)
         self.edge_index = edge_index
         self.cell_index = cell_index
+        self.proteins = self.nodes.unsqueeze(0)
 
         self.use_cache = use_cache
         self.cache = {}
@@ -140,6 +142,8 @@ class TopoteinComplex:
             return self.num_edges
         elif rank == 2:
             return self.num_cells
+        elif rank == 3:
+            return self.num_proteins
         else:
             raise ValueError(f'Invalid rank: {rank}')
 
@@ -188,10 +192,10 @@ class TopoteinComplex:
         if from_rank > to_rank:
             raise ValueError(f'Invalid rank: from_rank={from_rank} > to_rank={to_rank}')
 
-        supported_ranks = [0, 1, 2]
-        if from_rank not in supported_ranks:
+        supported_ranks = [0, 1, 2, 3]
+        if from_rank not in supported_ranks[:-1]:
             raise ValueError(f'Invalid rank: from_rank={from_rank}, supported ranks: {supported_ranks}')
-        if to_rank not in supported_ranks:
+        if to_rank not in supported_ranks[1:]:
             raise ValueError(f'Invalid rank: to_rank={to_rank}, supported ranks: {supported_ranks}')
 
         row, col = None, None
@@ -229,7 +233,15 @@ class TopoteinComplex:
             if from_rank == 1:
                 indices = map_edges_to_cells_searchsorted(self.edge_index, self.cell_index)
                 row, col = indices[1], indices[0]
+        elif to_rank == 3:
+            if from_rank == 0:
+                col = self.nodes
+            elif from_rank == 1:
+                col = torch.arange(self.num_edges, device=self.device)
+            elif from_rank == 2:
+                col = torch.arange(self.num_cells, device=self.device)
 
+            row = torch.zeros_like(col, device=self.device, dtype=torch.float)
 
         result = torch.sparse_coo_tensor(
             indices=torch.stack([col, row], dim=0),

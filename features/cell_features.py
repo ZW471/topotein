@@ -12,8 +12,9 @@ from torch_geometric.data import Batch, Data
 import toponetx as tnx
 from proteinworkshop.features.utils import _normalize
 from torch.nn.utils.rnn import pad_sequence
-from proteinworkshop.models.utils import localize, centralize
+from proteinworkshop.models.utils import centralize
 from topotein.features.topotein_complex import TopoteinComplex
+from topotein.models.utils import localize
 
 CELL_FEATURES: List[str] = [
     "cell_size",
@@ -171,8 +172,9 @@ def pos_emb(cell_index: EdgeTensor, num_pos_emb: int = 16):
 
 @jaxtyped(typechecker=typechecker)
 def variance_wrt_localized_frame(batch: ProteinBatch) -> torch.Tensor:
-    _, X_c = centralize(batch, key='pos', batch_index=batch.batch)
-    frames = localize(X_c, batch.sse_cell_index_simple)
+    ori_pos = batch.pos
+    _, batch.pos = centralize(batch, key='pos', batch_index=batch.batch)
+    frames = localize(batch, rank=2)
 
     results = []
     n_segments = batch.sse_cell_index_simple.shape[1]
@@ -180,9 +182,10 @@ def variance_wrt_localized_frame(batch: ProteinBatch) -> torch.Tensor:
         start = batch.sse_cell_index_simple[0, i]
         end = batch.sse_cell_index_simple[1, i] + 1
         # Process the segment
-        seg_result = (X_c[start:end, :] @ frames[i].T).var(dim=0)
+        seg_result = (batch.pos[start:end, :] @ frames[i]).var(dim=0)
         results.append(seg_result)
     # Stack the variance results; shape: (n_segments, output_features)
+    batch.pos = ori_pos
     return torch.stack(results, dim=0)
 
 
