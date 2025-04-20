@@ -92,8 +92,8 @@ class TopoteinNetModel(nn.Module):
         batch.frame_dict = {i: localize(batch, rank=i) for i in range(4)}
         batch.embeddings = self.embed(batch)
         batch.embeddings[3] = ScalarVector(
-            torch.zeros(32, 128, device=batch.x.device),
-            torch.zeros(32, 16, 3, device=batch.x.device)
+            torch.zeros(len(batch.id), 128, device=batch.x.device),
+            torch.zeros(len(batch.id), 16, 3, device=batch.x.device)
         )
 
         for layer in self.interaction_layers:

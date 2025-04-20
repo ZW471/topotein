@@ -88,7 +88,7 @@ class TopoteinMessagePassing(nn.Module):
         self.out_dim_dict = out_dim_dict
         self.mapping_dict_list = [
             {0: [1, 2, 3], 1: [0], 2: [0, 3], 3: [2]},
-            {0: [0, 3], 1: [0, 3], 2: [0, 1, 3], 3: [0, 1, 2]}
+            # {0: [0, 3], 2: [3]}
         ]
         self.gmp_list = nn.ModuleList([
             GeometricMessagePassing(
@@ -118,7 +118,7 @@ class TopoteinMessagePassing(nn.Module):
             updates = gmp(X_dict, neighborhood_dict, batch.frame_dict)
             for key in X_dict.keys():
                 X_dict[key] = X_dict[key] + updates[key]
-        X_dict = self.normalize(X_dict)
+            X_dict = self.normalize(X_dict)
 
         return X_dict
 
