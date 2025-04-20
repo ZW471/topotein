@@ -16,7 +16,8 @@ from proteinworkshop.models.utils import safe_norm
 DEFAULT_RANK_MAPPING = {
     0: ScalarVector('x', 'x_vector_attr'),
     1: ScalarVector('edge_attr', 'edge_vector_attr'),
-    2: ScalarVector('sse_attr', 'sse_vector_attr')
+    2: ScalarVector('sse_attr', 'sse_vector_attr'),
+    3: ScalarVector('pr_attr', 'pr_vector_attr')
 }
 
 @jaxtyped(typechecker=typechecker)
