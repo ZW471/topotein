@@ -114,6 +114,7 @@ def compute_sses_pure_torch(
             num_nodes=x.num_nodes,
             edge_index=x.edge_index,
             sse_index=cell_index,
+            node_pos=x.pos,
             num_proteins=len(x.id),
             protein_batch=x.batch
         )

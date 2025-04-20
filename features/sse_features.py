@@ -16,7 +16,7 @@ from proteinworkshop.models.utils import centralize
 from topotein.features.topotein_complex import TopoteinComplex
 from topotein.models.utils import localize
 
-CELL_FEATURES: List[str] = [
+SSE_FEATURES: List[str] = [
     "cell_size",
     "node_features",
     "edge_features",
@@ -29,7 +29,7 @@ CELL_FEATURES: List[str] = [
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_scalar_cell_features(
+def compute_scalar_sse_features(
         x: Union[Data, Batch], features: Union[List[str], ListConfig]
 ) -> torch.Tensor:
     """
@@ -44,7 +44,7 @@ def compute_scalar_cell_features(
     feats = []
     for feature in features:
         if feature == "sse_size":
-            feats.append(compute_cell_sizes(x.sse_cell_complex).to(x.x.device))
+            feats.append(compute_sse_sizes(x.sse_cell_complex).to(x.x.device))
         elif feature == "node_features":
             feats.append(get_means_by_group(x.x, x.sse_cell_index))
         elif feature == "edge_features":  # TODO: but unsure if this is needed because edge features contains too much node features
@@ -65,7 +65,7 @@ def compute_scalar_cell_features(
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_vector_cell_features(
+def compute_vector_sse_features(
         x: Union[Data, Batch], features: Union[List[str], ListConfig]
 ) -> torch.Tensor:
     """
@@ -100,7 +100,7 @@ def compute_vector_cell_features(
 
 
 @jaxtyped(typechecker=typechecker)
-def compute_cell_sizes(cell_complex: Union[tnx.CellComplex, TopoteinComplex]) -> torch.Tensor:
+def compute_sse_sizes(cell_complex: Union[tnx.CellComplex, TopoteinComplex]) -> torch.Tensor:
     """
     Compute the sizes of all cells within the provided cell complex.
 
@@ -120,6 +120,8 @@ def compute_cell_sizes(cell_complex: Union[tnx.CellComplex, TopoteinComplex]) ->
         return torch.tensor(list(map(cell_complex.size, iter(cell_complex.cells))))
     elif type(cell_complex) == TopoteinComplex:
         return cell_complex.laplacian_matrix(rank=2, via_rank=0).values()
+    else:
+        raise ValueError(f"Invalid cell complex type: {type(cell_complex)}")
 
 
 @jaxtyped(typechecker=typechecker)

@@ -115,7 +115,7 @@ def map_edges_to_cells_searchsorted(edge_indices: torch.Tensor, cell_indices: to
 
 
 class TopoteinComplex:
-    def __init__(self, num_nodes, edge_index, sse_index, num_proteins=None, protein_batch=None, use_cache=True):
+    def __init__(self, num_nodes, edge_index, sse_index, node_pos, num_proteins=None, protein_batch=None, use_cache=True):
         self.device = edge_index.device
 
         self.num_nodes = num_nodes
@@ -131,7 +131,7 @@ class TopoteinComplex:
         self.use_cache = use_cache
         self.cache = {}
 
-        self.node_pos = None
+        self.node_pos = node_pos
         self.com_dict = {}
 
     def get_com(self, rank):

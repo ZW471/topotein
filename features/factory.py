@@ -8,12 +8,14 @@ from torch_geometric.data import Batch
 
 from proteinworkshop.features.edge_features import compute_scalar_edge_features, compute_vector_edge_features
 from proteinworkshop.features.factory import ProteinFeaturiser, StructureRepresentation
-from topotein.features.cell_features import compute_scalar_cell_features, compute_vector_cell_features
-from topotein.features.cells import compute_sses, compute_sses_pure_torch
+from topotein.features.protein_features import compute_vector_protein_features, compute_scalar_protein_features
+from topotein.features.sse_features import compute_scalar_sse_features, compute_vector_sse_features
+from topotein.features.cell_complex import compute_sses, compute_sses_pure_torch
 from topotein.features.neighborhoods import compute_neighborhoods
 from topotein.features.sse import sse_onehot
-from proteinworkshop.types import ScalarNodeFeature, VectorNodeFeature, ScalarEdgeFeature, VectorEdgeFeature, \
-    ScalarCellFeature, VectorCellFeature
+from proteinworkshop.types import ScalarNodeFeature, VectorNodeFeature, ScalarEdgeFeature, VectorEdgeFeature
+from topotein.types import ScalarSSEFeature, VectorSSEFeature, ScalarProteinFeature, VectorProteinFeature
+
 
 # note: remember to add feature dimension in the models.utils.get_input_dim function
 
@@ -27,8 +29,10 @@ class TopoteinFeaturiser(ProteinFeaturiser):
         scalar_edge_features: List[ScalarEdgeFeature],
         vector_edge_features: List[VectorEdgeFeature],
         sse_types: List[str],
-        scalar_sse_features: List[ScalarCellFeature],
-        vector_sse_features: List[VectorCellFeature],
+        scalar_sse_features: List[ScalarSSEFeature],
+        vector_sse_features: List[VectorSSEFeature],
+        scalar_pr_features: List[ScalarProteinFeature],
+        vector_pr_features: List[VectorProteinFeature],
         neighborhoods: List[str],
         directed_edges: bool = False,
         pure_torch: bool = False,
@@ -43,6 +47,8 @@ class TopoteinFeaturiser(ProteinFeaturiser):
         self.sse_types = sse_types
         self.scalar_sse_features = scalar_sse_features
         self.vector_sse_features = vector_sse_features
+        self.scalar_pr_features = scalar_pr_features
+        self.vector_pr_features = vector_pr_features
         # edge features should be calculated after attaching cells
         self.neighborhoods = neighborhoods
         self.directed_edges = directed_edges
@@ -104,13 +110,13 @@ class TopoteinFeaturiser(ProteinFeaturiser):
 
         # Scalar cell features
         if self.scalar_sse_features:
-            batch.sse_attr = compute_scalar_cell_features(
+            batch.sse_attr = compute_scalar_sse_features(
                 batch, self.scalar_sse_features
             )
 
         # Vector cell features
         if self.vector_sse_features:
-            batch.sse_vector_attr = compute_vector_cell_features(
+            batch.sse_vector_attr = compute_vector_sse_features(
                 batch, self.vector_sse_features
             )
 
@@ -120,6 +126,16 @@ class TopoteinFeaturiser(ProteinFeaturiser):
             )
             for name, value in neighborhoods.items():
                 batch[name] = value
+
+        if self.scalar_pr_features:
+            batch.pr_attr = compute_scalar_protein_features(
+                batch, self.scalar_pr_features
+            )
+
+        if self.vector_pr_features:
+            batch.pr_vector_attr = compute_vector_protein_features(
+                batch, self.vector_pr_features
+            )
 
         if not self.pure_torch:
             # Scalar edge features
@@ -138,8 +154,9 @@ class TopoteinFeaturiser(ProteinFeaturiser):
 
     def __repr__(self) -> str:
         return f"TopoteinFeaturiser(representation={self.representation}, scalar_node_features={self.scalar_node_features}, vector_node_features={self.vector_node_features}, \
-            edge_types={self.edge_types}, scalar_edge_features={self.scalar_edge_features if self.pure_torch else self.scalar_edge_features_after_sse}, vector_edge_features={self.vector_edge_features if self.pure_torch else self.vector_edge_features_after_sse}, cell_types={self.sse_types}, \
-            scalar_cell_features={self.scalar_sse_features}, vector_cell_features={self.vector_sse_features}, neighborhoods={self.neighborhoods}, directed_edges={self.directed_edges}, pure_torch={self.pure_torch})"
+            edge_types={self.edge_types}, scalar_edge_features={self.scalar_edge_features if self.pure_torch else self.scalar_edge_features_after_sse}, vector_edge_features={self.vector_edge_features if self.pure_torch else self.vector_edge_features_after_sse}, sse_types={self.sse_types}, \
+            scalar_sse_features={self.scalar_sse_features}, vector_sse_features={self.vector_sse_features}, \
+            scalar_pr_features={self.scalar_pr_features}, vector_pr_features={self.vector_pr_features}, neighborhoods={self.neighborhoods}, directed_edges={self.directed_edges}, pure_torch={self.pure_torch})"
 
 
 #%%
@@ -166,7 +183,7 @@ if __name__ == "__main__":
     cfg['neighborhoods'] = ['N0_2 = B0_2']
     # cfg['pure_torch'] = True
     featuriser = hydra.utils.instantiate(cfg)
-    batch: ProteinBatch = torch.load('./test/data/sample_batch/sample_batch_unfeaturised.pt', weights_only=False)
+    batch: ProteinBatch = torch.load('/Users/dricpro/PycharmProjects/Topotein/test/data/sample_batch/sample_batch_unfeaturised.pt', weights_only=False)
     print(batch)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     batch.to(device)
