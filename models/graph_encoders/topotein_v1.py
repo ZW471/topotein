@@ -9,10 +9,12 @@ from proteinworkshop.types import EncoderOutput
 from topotein.models.graph_encoders.layers.tcp import TCPInteractions
 from topotein.models.graph_encoders.layers.topotein_net.backbone_encoder import BackboneEncoder
 from topotein.models.graph_encoders.layers.topotein_net.embedding import TPPEmbedding
+from topotein.models.graph_encoders.layers.topotein_net.message_passing import TopoteinMessagePassing
+from topotein.models.graph_encoders.layers.topotein_net.tpp import TPP
 from topotein.models.utils import tensorize, localize
 
 
-class TopoteinModel(nn.Module):
+class TopoteinNetModel(nn.Module):
     @property
     def required_batch_attributes(self) -> List[str]:
         return ["edge_index", "pos", "x", "batch"]
@@ -53,25 +55,19 @@ class TopoteinModel(nn.Module):
         else:
             self.activation = activation
 
-        self.activation_name = self.activation
-        self.activation = get_activations(self.activation)
         self.embed = TPPEmbedding(
             in_dims_dict=self.in_dims_dict,
             out_dims_dict=self.out_dims_dict,
             ranks=[0, 1, 2],
             bottleneck=1,
-            activation=self.activation_name
+            activation=self.activation
         )
         # interactions layers
 
         self.interaction_layers = nn.ModuleList(
-            TCPInteractions(
-                self.out_dims_dict[0],
-                self.out_dims_dict[1],
-                self.out_dims_dict[2],
-                cfg=module_cfg,
-                layer_cfg=layer_cfg,
-                dropout=model_cfg.dropout,
+            TopoteinMessagePassing(
+                in_dim_dict=self.out_dims_dict,
+                out_dim_dict=self.out_dims_dict
             )
             for _ in range(model_cfg.num_layers)
         )
@@ -79,59 +75,34 @@ class TopoteinModel(nn.Module):
         self.invariant_node_projection = nn.ModuleList(
             [
                 gcp.GCPLayerNorm(self.out_dims_dict[0]),
-                gcp.GCP(
-                    # Note: `GCPNet` defaults to providing SE(3) equivariance
-                    # It is possible to provide E(3) equivariance by instead setting `module_cfg.enable_e3_equivariance=true`
-                    self.out_dims_dict[0],
-                    ScalarVector(self.out_dims_dict[0].scalar, 0),
-                    nonlinearities=tuple(module_cfg.nonlinearities),
-                    scalar_gate=module_cfg.scalar_gate,
-                    vector_gate=module_cfg.vector_gate,
-                    enable_e3_equivariance=module_cfg.enable_e3_equivariance,
-                    node_inputs=True,
-                ),
+                TPP(in_dims=self.out_dims_dict[0], out_dims=self.out_dims_dict[0], rank=0, activation=self.activation),
             ]
         )
 
-        # Global pooling/readout function
-        self.readout = get_aggregation(
-            module_cfg.pool
-        )  # {"mean": global_mean_pool, "sum": global_add_pool}[pool]
-
-
+        self.invariant_protein_projection = nn.ModuleList(
+            [
+                gcp.GCPLayerNorm(self.out_dims_dict[3]),
+                TPP(in_dims=self.out_dims_dict[3], out_dims=self.out_dims_dict[3], rank=3, activation=self.activation),
+            ]
+        )
 
 
     def forward(self, batch):
         pos_centroid, batch.pos = centralize(batch, batch_index=batch.batch, key="pos")
-        batch.frame_dict = {i: localize(batch, rank=i) for i in range(3)}
-
-        (c, rho) = self.get_sse_emb(batch)
-        h, chi, e, xi = self.get_node_and_edge_emb(batch)
+        batch.frame_dict = {i: localize(batch, rank=i) for i in range(4)}
+        batch.embeddings = self.embed(batch)
+        batch.embeddings[3] = ScalarVector(
+            torch.zeros(32, 128, device=batch.x.device),
+            torch.zeros(32, 16, 3, device=batch.x.device)
+        )
 
         for layer in self.interaction_layers:
-            (h, chi), batch.pos = layer(
-                node_rep=ScalarVector(h, chi),
-                edge_rep=ScalarVector(e, xi),
-                cell_rep=ScalarVector(c, rho),
-                frames=batch.frame_dict[1],
-                cell_frames=batch.frame_dict[2],
-                edge_index=batch.edge_index,
-                node_mask=getattr(batch, "mask", None),
-                node_pos=batch.pos,
-                node_to_sse_mapping=batch.N0_2,
-            )
+            batch.embeddings = layer(batch)
 
-        # Record final version of each feature in `Batch` object
-        batch.h, batch.chi, batch.e, batch.xi, batch.c, batch.rho = h, chi, e, xi, c, rho
+        h_out = self.invariant_node_projection[0](batch.embeddings[0])
+        h_out, _ = self.invariant_node_projection[1](h_out, batch.frame_dict[0])
+        p_out = self.invariant_protein_projection[0](batch.embeddings[3])
+        p_out, _ = self.invariant_protein_projection[1](p_out, batch.frame_dict[3])
 
-        out = self.invariant_node_projection[0](
-            ScalarVector(h, chi)
-        )  # e.g., GCPLayerNorm()
-        out = self.invariant_node_projection[1](
-            out, batch.edge_index, batch.frame_dict[1], node_inputs=True
-        )  # e.g., GCP((h, chi)) -> h'
-
-        encoder_outputs = {"node_embedding": out, "graph_embedding": self.readout(
-            out, batch.batch
-        )}
+        encoder_outputs = {"node_embedding": h_out, "graph_embedding": p_out}
         return EncoderOutput(encoder_outputs)

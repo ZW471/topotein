@@ -6,6 +6,7 @@ from torch import nn
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.types import ActivationType
+from topotein.models.graph_encoders.layers.topotein_net.normalization import TPPNorm
 
 from topotein.models.graph_encoders.layers.topotein_net.tpp import TPP
 from topotein.models.utils import sv_aggregate
@@ -85,36 +86,46 @@ class TopoteinMessagePassing(nn.Module):
         super().__init__(**kwargs)
         self.in_dim_dict = in_dim_dict
         self.out_dim_dict = out_dim_dict
-        self.mapping_dict = {0: [1, 2, 3], 1: [0], 2: [0, 3], 3: [2]}
-        self.gmp = GeometricMessagePassing(
-            in_dim_dict=self.in_dim_dict,
-            out_dim_dict=self.out_dim_dict,
-            mapping_dict=self.mapping_dict,
-            agg_reduce='sum',
-            frame_selection='target',
-            activation='silu'
-        )
+        self.mapping_dict_list = [
+            {0: [1, 2, 3], 1: [0], 2: [0, 3], 3: [2]},
+            {0: [0, 3], 1: [0, 3], 2: [0, 1, 3], 3: [0, 1, 2]}
+        ]
+        self.gmp_list = nn.ModuleList([
+            GeometricMessagePassing(
+                in_dim_dict=self.in_dim_dict,
+                out_dim_dict=self.out_dim_dict,
+                mapping_dict=mapping_dict,
+                agg_reduce='sum',
+                frame_selection='target',
+                activation='silu'
+            ) for mapping_dict in self.mapping_dict_list
+        ])
         self.rank_mapping_dict = {
             0: ScalarVector('h', 'chi'),
             1: ScalarVector('e', 'xi'),
             2: ScalarVector('c', 'rho'),
             3: ScalarVector('p', 'pi'),
         }
+        self.normalize = TPPNorm(
+            dim_dict=self.out_dim_dict
+        )
 
 
     def forward(self, batch):
         X_dict = batch.embeddings
-        neighborhood_dict = self.get_neighborhood_dict(batch)
-        updates = self.gmp(X_dict, neighborhood_dict, batch.frame_dict)
-        for key in X_dict.keys():
-            X_dict[key] = X_dict[key] + updates[key]
+        for gmp, mapping in zip(self.gmp_list, self.mapping_dict_list):
+            neighborhood_dict = self.get_neighborhood_dict(batch, mapping)
+            updates = gmp(X_dict, neighborhood_dict, batch.frame_dict)
+            for key in X_dict.keys():
+                X_dict[key] = X_dict[key] + updates[key]
+        X_dict = self.normalize(X_dict)
 
         return X_dict
 
-    def get_neighborhood_dict(self, batch):
+    def get_neighborhood_dict(self, batch, mapping_dict):
         neighborhood_dict = {}
-        for from_rank in self.mapping_dict.keys():
-            for to_rank in self.mapping_dict[from_rank]:
+        for from_rank in mapping_dict.keys():
+            for to_rank in mapping_dict[from_rank]:
                 key = f"N{from_rank}_{to_rank}"
                 if hasattr(batch, key):
                     neighborhood_dict[key] = batch[key]
@@ -134,7 +145,7 @@ if __name__ == '__main__':
     hidden_dims = {
         0: ScalarVector(128, 16),
         1: ScalarVector(32, 4),
-        2: ScalarVector(64, 8),
+        2: ScalarVector(128, 16),
         3: ScalarVector(128, 16)
     }
     batch: ProteinBatch = torch.load('/Users/dricpro/PycharmProjects/Topotein/test/data/sample_batch/sample_batch_ccc2.pt', weights_only=False).to(device)

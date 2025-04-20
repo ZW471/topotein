@@ -113,7 +113,9 @@ def compute_sses_pure_torch(
         return cell_type, cell_index, TopoteinComplex(
             num_nodes=x.num_nodes,
             edge_index=x.edge_index,
-            cell_index=cell_index,
+            sse_index=cell_index,
+            num_proteins=len(x.id),
+            protein_batch=x.batch
         )
     else:
         raise NotImplementedError(f"only 3-class scheme implemented")

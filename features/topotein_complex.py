@@ -1,9 +1,12 @@
 import torch
 
+from topotein.models.utils import get_com
+
+
 def zero_diagonal(sparse_tensor):
     # Get the indices and values (assumes 2D tensor)
     indices = sparse_tensor._indices()  # shape: [2, nnz]
-    values = sparse_tensor._values()     # shape: [nnz]
+    values = sparse_tensor._values()  # shape: [nnz]
 
     # Create a mask that is True for non-diagonal entries (row index != column index)
     mask = indices[0] != indices[1]
@@ -14,6 +17,7 @@ def zero_diagonal(sparse_tensor):
 
     # Create and return a new sparse tensor with the same shape
     return torch.sparse_coo_tensor(new_indices, new_values, sparse_tensor.shape, device=sparse_tensor.device)
+
 
 def map_edges_to_cells(edge_indices: torch.Tensor, cell_indices: torch.Tensor):
     """
@@ -39,8 +43,8 @@ def map_edges_to_cells(edge_indices: torch.Tensor, cell_indices: torch.Tensor):
     """
 
     # Expand dimensions to allow broadcasting.
-    edges_x = edge_indices[0, :].unsqueeze(1)    # shape: [a, 1]
-    edges_y = edge_indices[1, :].unsqueeze(1)    # shape: [a, 1]
+    edges_x = edge_indices[0, :].unsqueeze(1)  # shape: [a, 1]
+    edges_y = edge_indices[1, :].unsqueeze(1)  # shape: [a, 1]
 
     cells_lower = cell_indices[0, :].unsqueeze(0)  # shape: [1, b]
     cells_upper = cell_indices[1, :].unsqueeze(0)  # shape: [1, b]
@@ -60,6 +64,7 @@ def map_edges_to_cells(edge_indices: torch.Tensor, cell_indices: torch.Tensor):
     # values = dense_tensor[dense_tensor != 0]  # no need since all will be 1
 
     return indices
+
 
 def map_edges_to_cells_searchsorted(edge_indices: torch.Tensor, cell_indices: torch.Tensor):
     """
@@ -108,22 +113,51 @@ def map_edges_to_cells_searchsorted(edge_indices: torch.Tensor, cell_indices: to
     mapping = torch.stack([valid_edge_indices, mapped_cell_indices], dim=0)
     return mapping
 
+
 class TopoteinComplex:
-    def __init__(self, num_nodes, edge_index, cell_index, num_proteins=None, protein_batch=None, use_cache=True):
+    def __init__(self, num_nodes, edge_index, sse_index, num_proteins=None, protein_batch=None, use_cache=True):
         self.device = edge_index.device
 
         self.num_nodes = num_nodes
         self.num_edges = edge_index.shape[1]
-        self.num_cells = cell_index.shape[1]
+        self.num_sses = sse_index.shape[1]
         self.num_proteins = num_proteins
 
         self.nodes = torch.arange(num_nodes, device=self.device)
         self.edge_index = edge_index
-        self.cell_index = cell_index
+        self.cell_index = sse_index
         self.protein_batch = protein_batch
 
         self.use_cache = use_cache
         self.cache = {}
+
+        self.node_pos = None
+        self.com_dict = {}
+
+    def get_com(self, rank):
+        com = None
+        if self.use_cache:
+            com = self.com_dict.get(rank, None)
+        if com is None:
+            if rank == 0:
+                com = self.node_pos
+            elif rank == 1:
+                com = (self.node_pos[self.edge_index[0]] + self.node_pos[self.edge_index[1]]) / 2
+            elif rank == 2:
+                B0_2_idx = self.incidence_matrix(from_rank=0, to_rank=2).indices()
+                com = get_com(
+                    positions=self.node_pos[B0_2_idx[0]],
+                    cluster_ids=B0_2_idx[1],
+                    cluster_num=self.num_sses,
+                )
+            elif rank == 3:
+                com = get_com(self.node_pos, self.protein_batch, self.num_proteins)
+            else:
+                raise ValueError(f'Invalid rank: {rank}')
+
+            if self.use_cache:
+                self.com_dict[rank] = com
+        return com
 
     def set_proteins(self, num_proteins, protein_batch):
         self.num_proteins = num_proteins
@@ -145,7 +179,7 @@ class TopoteinComplex:
         elif rank == 1:
             return self.num_edges
         elif rank == 2:
-            return self.num_cells
+            return self.num_sses
         elif rank == 3:
             return self.num_proteins
         else:
@@ -198,7 +232,8 @@ class TopoteinComplex:
             return cache
 
         if from_rank > to_rank and not (from_rank == 1 and to_rank == 0):
-            raise ValueError(f'Invalid rank: from_rank={from_rank} > to_rank={to_rank} and not (from_rank=1 and to_rank=0)')
+            raise ValueError(
+                f'Invalid rank: from_rank={from_rank} > to_rank={to_rank} and not (from_rank=1 and to_rank=0)')
 
         supported_ranks = [0, 1, 2, 3] if self.protein_batch is not None else [0, 1, 2]
         if not (from_rank == 1 and to_rank == 0):
@@ -221,7 +256,7 @@ class TopoteinComplex:
         elif to_rank == 2:
             if from_rank == 0:
                 cell_starts = self.cell_index[0, :]  # shape: [b]
-                cell_ends = self.cell_index[1, :]    # shape: [b]
+                cell_ends = self.cell_index[1, :]  # shape: [b]
                 lengths = cell_ends - cell_starts + 1  # shape: [b]
 
                 # Compute cumulative lengths to know the starting index for each cell in the concatenated vector.
@@ -255,7 +290,7 @@ class TopoteinComplex:
                 col = torch.arange(self.num_edges, device=self.device)
                 row = self.protein_batch[self.edge_index[0]]
             elif from_rank == 2:
-                col = torch.arange(self.num_cells, device=self.device)
+                col = torch.arange(self.num_sses, device=self.device)
                 row = self.protein_batch[self.cell_index[0]]
 
         result = torch.sparse_coo_tensor(
@@ -266,6 +301,7 @@ class TopoteinComplex:
             dtype=torch.float
         ).coalesce()
 
-        self._write_neighborhood_cache(neighborhood_type=neighborhood_type, rank=from_rank, to_rank=to_rank, neighborhood=result)
+        self._write_neighborhood_cache(neighborhood_type=neighborhood_type, rank=from_rank, to_rank=to_rank,
+                                       neighborhood=result)
 
         return result
