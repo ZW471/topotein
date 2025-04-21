@@ -26,15 +26,24 @@ class GeometricMessagePassing(nn.Module):
         for from_rank in self.mapping_dict.keys():
             for to_rank in self.mapping_dict[from_rank]:
                 self.target_ranks.add(to_rank)
-                self.W_intra[f'{from_rank}->{to_rank}'] = TPP(
-                    in_dims=ScalarVector(
-                        self.in_dim_dict[from_rank].scalar + self.out_dim_dict[to_rank].scalar,
-                        self.in_dim_dict[from_rank].vector + self.out_dim_dict[to_rank].vector,
-                        ),
-                    out_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
-                    rank=self._get_frame_rank(to_rank, from_rank),
-                    activation=activation
-                )
+                self.W_intra[f'{from_rank}->{to_rank}'] = nn.ModuleList([
+                    TPP(
+                        in_dims=ScalarVector(
+                            self.in_dim_dict[from_rank].scalar + self.out_dim_dict[to_rank].scalar,
+                            self.in_dim_dict[from_rank].vector + self.out_dim_dict[to_rank].vector,
+                            ),
+                        out_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
+                        rank=self._get_frame_rank(to_rank, from_rank),
+                        activation=activation
+                    )
+                ] + [
+                    TPP(
+                        in_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
+                        out_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
+                        rank=self._get_frame_rank(to_rank, from_rank),
+                        activation=activation
+                    ) for _ in range(2)
+                ])
 
                 if to_rank not in self.msg_num_to_rank.keys():
                     self.msg_num_to_rank[to_rank] = 0
@@ -42,15 +51,24 @@ class GeometricMessagePassing(nn.Module):
 
         self.W_inter = nn.ModuleDict()
         for to_rank in self.target_ranks:
-            self.W_inter[f'{to_rank}'] = TPP(
-                in_dims=ScalarVector(
-                    self.out_dim_dict[to_rank].scalar * self.msg_num_to_rank[to_rank] + self.in_dim_dict[to_rank].scalar,
-                    self.out_dim_dict[to_rank].vector * self.msg_num_to_rank[to_rank] + self.in_dim_dict[to_rank].vector,
-                    ),
-                out_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
-                rank=to_rank,
-                activation=activation
-            )
+            self.W_inter[f'{to_rank}'] = nn.ModuleList([
+               TPP(
+                   in_dims=ScalarVector(
+                       self.out_dim_dict[to_rank].scalar * self.msg_num_to_rank[to_rank] + self.in_dim_dict[to_rank].scalar,
+                       self.out_dim_dict[to_rank].vector * self.msg_num_to_rank[to_rank] + self.in_dim_dict[to_rank].vector,
+                       ),
+                   out_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
+                   rank=to_rank,
+                   activation=activation
+               )
+           ] + [
+                TPP(
+                    in_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
+                    out_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
+                    rank=to_rank,
+                    activation=activation
+                ) for _ in range(2)
+            ])
 
     def _get_frame_rank(self, to_rank, from_rank):
         if self.frame_selection == 'target':
@@ -66,14 +84,16 @@ class GeometricMessagePassing(nn.Module):
                 msg = sv_aggregate(X_dict[from_rank], neighborhood, self.agg_reduce)
                 if to_rank in msg_dict.keys():
                     msg = msg.concat([X_dict[to_rank]])
-                msg_dict[to_rank].append(
-                    self.W_intra[f'{from_rank}->{to_rank}'](msg, frame_dict[from_rank])
-                )
+                for layer in self.W_intra[f'{from_rank}->{to_rank}']:
+                    msg = layer(msg, frame_dict[to_rank])
+                msg_dict[to_rank].append(msg)
 
         update_dict = {}
         for to_rank in msg_dict.keys():
             msg = ScalarVector(*X_dict[to_rank].concat(msg_dict[to_rank]))
-            update_dict[to_rank] = self.W_inter[f'{to_rank}'](msg, frame_dict[to_rank])
+            for layer in self.W_inter[f'{to_rank}']:
+                msg = layer(msg, frame_dict[to_rank])
+            update_dict[to_rank] = msg
 
         return update_dict
 
