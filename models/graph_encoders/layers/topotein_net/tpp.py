@@ -9,6 +9,25 @@ from topotein.models.utils import scalarize, tensorize
 
 class TPP(torch.nn.Module):
     def __init__(self, in_dims: ScalarVector, out_dims: ScalarVector, rank: int, activation:ActivationType='silu', bottleneck=4, **kwargs):
+        """
+        Initializes a neural network module with configurable layer sizes,
+        activation functions, and optional tensorization capabilities.
+
+        This module includes several sequential layers for transforming
+        input dimensions across scaler and vector spaces with the ability
+        to adjust bottleneck factors, enable or disable tensorization,
+        and apply activations dynamically. The architecture integrates
+        split operations for downscaling vectors if specified and supports
+        gate mechanisms to modulate outputs.
+
+        :param in_dims: Input dimensions including scalar and vector sub-dimensions.
+        :param out_dims: Output dimensions including scalar and vector sub-dimensions.
+        :param rank: Integer rank parameter used for dimensionality adjustments.
+        :param activation: Type of activation function to use in the layers.
+        :param bottleneck: Integer factor to reduce vector dimension via the bottleneck mechanism.
+        :param kwargs: Additional configuration parameters for enabling tensorization
+                       and specifying split behavior in vector dimensions.
+        """
         super().__init__()
         assert (
                 in_dims.vector % bottleneck == 0
@@ -21,7 +40,7 @@ class TPP(torch.nn.Module):
         self.vector_out_dim: int = out_dims.vector
         self.activation = get_activations(activation)
         self.enable_tensorization = getattr(kwargs, "enable_tensorization", False)
-        self.split_V_down = getattr(kwargs, "split_V_down", True)
+        self.split_V_down = getattr(kwargs, "split_V_down", False)
 
         self.V_down = nn.Sequential(
             nn.Linear(self.vector_in_dim, self.vector_hidden_dim),
@@ -59,6 +78,21 @@ class TPP(torch.nn.Module):
 
 
     def forward(self, s_and_v: ScalarVector, frame_dict):
+        """
+        Computes the forward pass for a given set of scalar and vector components.
+
+        The function takes a tuple containing scalar and vector components, processes
+        them through a series of transformations, and outputs the resulting scalar
+        and vector outputs. It performs a variety of operations such as transformations,
+        scalarization, normalization, activation, and tensorization (if enabled)
+        to derive the final outputs.
+
+        :param s_and_v: A tuple containing scalar (`s`) and vector (`v`) components.
+        :param frame_dict: A dictionary mapping rank identifiers to their respective frames,
+                           used for operations requiring frame-specific transformations.
+
+        :return: A `ScalarVector` instance containing the computed scalar and vector outputs.
+        """
         frames = frame_dict[self.rank]
         s, v = s_and_v
 

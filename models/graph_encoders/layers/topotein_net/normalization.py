@@ -11,7 +11,7 @@ class TPPNorm(nn.Module):
         for rank in dim_dict:
             self.gcp_layer_norm[str(rank)] = GCPLayerNorm(dim_dict[rank], eps=eps, use_gcp_norm=use_norm)
 
-    def forward(self, X_dict):
+    def forward(self, X_dict: dict) -> dict:
         out = {}
         for rank in X_dict:
             out[rank] = self.gcp_layer_norm[str(rank)](X_dict[rank])

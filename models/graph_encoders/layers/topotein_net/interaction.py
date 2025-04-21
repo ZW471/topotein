@@ -1,9 +1,13 @@
+from typing import Dict
+
 from torch import nn
 import torch
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from topotein.models.graph_encoders.layers.topotein_net.embedding import TPPEmbedding
-from topotein.models.graph_encoders.layers.topotein_net.message_passing import GeometricMessagePassing
+from topotein.models.graph_encoders.layers.topotein_net.message_passing import GeometricMessagePassing, \
+    TPPMessagePassing
 from topotein.models.graph_encoders.layers.topotein_net.normalization import TPPNorm
+from topotein.models.graph_encoders.layers.topotein_net.tpp import TPP
 
 
 class TopoteinInteraction(nn.Module):
@@ -37,22 +41,13 @@ class TopoteinInteraction(nn.Module):
         ])
         self.ff_list = nn.ModuleList([
             TPPEmbedding(
-                in_dims_dict={k: v * 2 for k, v in self.out_dim_dict.items()},
-                out_dims_dict=self.out_dim_dict,
-                ranks=self.out_ranks,
-                bottleneck=4,
-                activation='silu',
-                is_batch_embedded=True,
-            )
-        ] + [
-            TPPEmbedding(
                 in_dims_dict=self.out_dim_dict,
                 out_dims_dict=self.out_dim_dict,
                 ranks=self.out_ranks,
                 bottleneck=4,
                 activation='silu',
                 is_batch_embedded=True,
-            ) for _ in range(1)
+            ) for _ in range(2)
         ])
         self.normalize = TPPNorm(
             dim_dict=self.out_dim_dict
@@ -62,27 +57,16 @@ class TopoteinInteraction(nn.Module):
     def forward(self, batch):
         X_residual = batch.embeddings.copy()
         X_dict = batch.embeddings
-        updates = {}
-        # interaction layers
+        # interaction layers: with residual connection
         for gmp, mapping in zip(self.gmp_list, self.mapping_dict_list):
             neighborhood_dict = self.get_neighborhood_dict(batch, mapping)
             u = gmp(X_dict, neighborhood_dict, batch.frame_dict)
             for key, value in u.items():
-                updates.setdefault(key, []).append(value)
+                X_dict[key] = X_dict[key] + value
 
-        # Convert lists to tensors and mean in one operation
-        for key in updates.keys():
-            scalar_stack = torch.stack([x.scalar for x in updates[key]], dim=0)
-            vector_stack = torch.stack([x.vector for x in updates[key]], dim=0)
-            mean_scalar = torch.mean(scalar_stack, dim=0)
-            mean_vector = torch.mean(vector_stack, dim=0)
-            X_dict[key] = ScalarVector(
-                torch.cat([X_dict[key].scalar, mean_scalar], dim=-1),
-                torch.cat([X_dict[key].vector, mean_vector], dim=-2)
-            )
 
         batch.embeddings = X_dict
-        # feed-forward layers
+        # feed-forward layers: no residual connection
         for ff in self.ff_list:
             X_dict = ff(batch)
             for key in X_dict:
@@ -106,6 +90,67 @@ class TopoteinInteraction(nn.Module):
                     raise KeyError(
                         f"Neighborhood {key} not found in batch. Please check your configuration and try again.")
         return neighborhood_dict
+
+
+class TPPInteraction(nn.Module):
+    def __init__(
+            self,
+            dim_dict: Dict[int, ScalarVector],
+    ):
+        super().__init__()
+
+        # hyperparameters #
+        reduce_function = "sum"
+        # geometry-complete message-passing neural network
+        self.interaction = TPPMessagePassing(
+            input_dim_dict=dim_dict,
+            output_dim_dict=dim_dict,
+            reduce_function=reduce_function,
+            use_scalar_message_attention=True
+        )
+
+        self.tpp_norm = TPPNorm(dim_dict)
+
+        # build out feedforward (FF) network modules
+        hidden_dims = ScalarVector(dim_dict[0].scalar * 4, dim_dict[0].vector * 2)
+        self.feedforward_network = nn.ModuleList([
+            TPP(
+                in_dims=ScalarVector(dim_dict[0].scalar * 2, dim_dict[0].vector * 2),
+                out_dims=hidden_dims,
+                rank=0
+            ),
+            TPP(
+                in_dims=hidden_dims,
+                out_dims=dim_dict[0],
+                rank=0,
+                activation="none"
+            )
+        ])
+
+    def forward(
+            self,
+            X_dict: Dict[int, ScalarVector],
+            neighbor_dict: Dict[str, torch.Tensor],
+            frame_dict: Dict[int, torch.Tensor],
+    ):
+        # forward propagate with interaction module
+        hidden_residual = self.interaction(
+            X_dict, neighbor_dict, frame_dict
+        )
+
+        # aggregate input and hidden features
+        hidden_residual = ScalarVector(*hidden_residual.concat((X_dict[0],)))
+
+        # propagate with feedforward layers
+        for module in self.feedforward_network:
+            hidden_residual = module(
+                hidden_residual,
+                frame_dict
+            )
+
+        X_dict[0] = self.tpp_norm({0: X_dict[0] + hidden_residual})[0]
+
+        return X_dict
 
 
 if __name__ == '__main__':

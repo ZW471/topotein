@@ -7,7 +7,7 @@ from proteinworkshop.models.graph_encoders.layers import gcp
 from proteinworkshop.models.utils import get_activations, centralize
 from proteinworkshop.types import EncoderOutput
 from topotein.models.graph_encoders.layers.topotein_net.embedding import TPPEmbedding
-from topotein.models.graph_encoders.layers.topotein_net.interaction import TopoteinInteraction
+from topotein.models.graph_encoders.layers.topotein_net.interaction import TopoteinInteraction, TPPInteraction
 from topotein.models.graph_encoders.layers.topotein_net.tpp import TPP
 from topotein.models.utils import tensorize, localize
 
@@ -71,9 +71,8 @@ class TopoteinNetModel(nn.Module):
         # interactions layers
 
         self.interaction_layers = nn.ModuleList(
-            TopoteinInteraction(
-                in_dim_dict=self.out_dims_dict,
-                out_dim_dict=self.out_dims_dict
+            TPPInteraction(
+                dim_dict=self.out_dims_dict
             )
             for _ in range(model_cfg.num_layers)
         )
@@ -97,12 +96,14 @@ class TopoteinNetModel(nn.Module):
         pos_centroid, batch.pos = centralize(batch, batch_index=batch.batch, key="pos")
         batch.frame_dict = {i: localize(batch, rank=i) for i in range(4)}
         batch['pr_vector_attr'] = tensorize(self.pr_pre_tensorize(batch.pr_attr), batch.frame_dict[3], flattened=True).transpose(-1, -2)
-        batch.embeddings = self.embed(batch)
-
+        X_dict = self.embed(batch)
+        batch['embeddings'] = X_dict
         for layer in self.interaction_layers:
-            X_dict = layer(batch)
-            for key in X_dict:
-                batch.embeddings[key] = X_dict[key]
+            X_dict = layer(X_dict, neighbor_dict={
+                "N0_0_via_1": batch.N0_0_via_1,
+            }, frame_dict=batch.frame_dict)
+        for key in X_dict:
+            batch.embeddings[key] = X_dict[key]
 
         h_out = self.invariant_node_projection[0](batch.embeddings[0])
         h_out, _ = self.invariant_node_projection[1](h_out, batch.frame_dict[0])
