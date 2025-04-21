@@ -42,7 +42,7 @@ class GeometricMessagePassing(nn.Module):
                         out_dims=ScalarVector(self.out_dim_dict[to_rank].scalar, self.out_dim_dict[to_rank].vector),
                         rank=self._get_frame_rank(to_rank, from_rank),
                         activation=activation
-                    ) for _ in range(2)
+                    ) for _ in range(0)
                 ])
 
                 if to_rank not in self.msg_num_to_rank.keys():
