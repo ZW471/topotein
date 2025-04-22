@@ -175,17 +175,14 @@ class TopoteinNeighborhoodCalculator:
 # Here we create a dummy TopoteinComplex and evaluate a few equations.
 if __name__ == "__main__":
     # Dummy data for demonstration (in practice, use your actual batch data)
-    device = "cpu"
-    num_nodes = 10
-    edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long, device=device)
-    cell_index = torch.tensor([[0, 6], [3, 9]], dtype=torch.long, device=device)  # example: two cells
+    batch = torch.load("/Users/dricpro/PycharmProjects/Topotein/test/data/sample_batch/sample_batch_ccc.pt", weights_only=False)
 
-    complex_instance = TopoteinComplex(num_nodes, edge_index, cell_index, use_cache=True)
-    calculator = TopoteinNeighborhoodCalculator(complex_instance)
+    calculator = TopoteinNeighborhoodCalculator(batch.sse_cell_complex)
     equations = [
         # "N0_1_from_B = B0_1 @ B0_1.T",
-        "N0_1_from_L = L0_1",
-        "N1_0_from_L = L1_0",
+        "N0_0_via_1 = A0_1",
+        "N0_1 = B0_1",
+        "N1_0 = B1_0"
         # "N0_1 = B0_1"
         # "B1_2 = B1_2",
         # "N0_2 = B0_2",

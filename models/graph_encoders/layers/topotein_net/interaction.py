@@ -109,7 +109,7 @@ class TPPInteraction(nn.Module):
             use_scalar_message_attention=True
         )
 
-        self.tpp_norm = TPPNorm(dim_dict)
+        self.tpp_norm = TPPNorm(dim_dict, use_norm_ranks=[0])
 
         # build out feedforward (FF) network modules
         hidden_dims = ScalarVector(dim_dict[0].scalar * 4, dim_dict[0].vector * 2)

@@ -30,7 +30,7 @@ class TPPEmbedding(torch.nn.Module):
             )
 
         self.normalize = TPPNorm(
-            dim_dict=out_dims_dict)
+            dim_dict=out_dims_dict, use_norm_ranks=[0, 2, 3])
 
     def forward(self, batch):
         out = {}
