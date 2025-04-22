@@ -36,30 +36,36 @@ class TPP(torch.nn.Module):
         self.scaler_in_dim: int = in_dims.scalar
         self.scaler_out_dim: int = out_dims.scalar
         self.vector_in_dim: int = in_dims.vector
-        self.vector_hidden_dim: int = self.vector_in_dim // bottleneck
         self.vector_out_dim: int = out_dims.vector
+        self.vector_hidden_dim: int = (
+            self.vector_in_dim // bottleneck
+            if bottleneck > 1
+            else max(self.vector_in_dim, self.vector_out_dim)
+        )
         self.activation = get_activations(activation)
         self.enable_tensorization = getattr(kwargs, "enable_tensorization", False)
-        self.split_V_down = getattr(kwargs, "split_V_down", False)
+        self.split_V_down = getattr(kwargs, "split_V_down", True)
+        self.scalarization_dim = getattr(kwargs, "scalarization_dim", 3)
+        self.feed_forward = getattr(kwargs, "feed_forward", False)
 
-        self.V_down = nn.Sequential(
-            nn.Linear(self.vector_in_dim, self.vector_hidden_dim),
-            self.activation,
-        )
+        self.V_down = nn.Linear(self.vector_in_dim, self.vector_hidden_dim, bias=False)
         if self.split_V_down:
             self.V_down_s = nn.Sequential(
-                nn.Linear(self.vector_in_dim, self.vector_hidden_dim),
+                nn.Linear(self.vector_in_dim, self.scalarization_dim),
                 self.activation,
             )
-        self.V_up = nn.Sequential(
-            nn.Linear(self.vector_hidden_dim, self.vector_out_dim),
-            self.activation,
-        )
+        self.V_up = nn.Linear(self.vector_hidden_dim, self.vector_out_dim, bias=False)
 
         self.S_out = nn.Sequential(
-            nn.Linear(self.scaler_in_dim + self.vector_hidden_dim * 4, self.scaler_out_dim),
+            nn.Linear(
+                self.scaler_in_dim + self.vector_hidden_dim + 3 * self.scalarization_dim,
+                self.scaler_out_dim
+            ),
             self.activation,
             nn.Linear(self.scaler_out_dim, self.scaler_out_dim)
+        ) if self.feed_forward else nn.Linear(
+            self.scaler_in_dim + self.vector_hidden_dim + 3 * self.scalarization_dim,
+            self.scaler_out_dim
         )
         if self.enable_tensorization:
             self.V_out = nn.Sequential(
@@ -107,15 +113,13 @@ class TPP(torch.nn.Module):
 
         concated_s = torch.cat([s, scalarized_z, normalized_z], dim=-1)
         s_out = self.S_out(concated_s)
-
-        non_linear_s_out = self.activation(s_out)
-        s_gate = self.S_gate(non_linear_s_out)
+        s_gate = self.S_gate(s_out)
         if self.enable_tensorization:
-            s_out_to_tensorize = self.S_tensorize(non_linear_s_out)
+            s_out_to_tensorize = self.S_tensorize(s_out)
             tensorized_s_out = tensorize(s_out_to_tensorize, frames, flattened=True)
             concated_v_t_up = torch.cat([v_t_up, tensorized_s_out], dim=-1)
             v_out = self.V_out(concated_v_t_up).transpose(-1, -2) * s_gate.unsqueeze(-1)
         else:
             v_out = v_t_up.transpose(-1, -2) * s_gate.unsqueeze(-1)
 
-        return ScalarVector(s_out, v_out)
+        return ScalarVector(self.activation(s_out), v_out)

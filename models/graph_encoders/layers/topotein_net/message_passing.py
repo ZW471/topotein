@@ -132,7 +132,14 @@ class TPPMessagePassing(nn.Module):
                 ScalarVector(scalars_in_dim, vectors_in_dim),
                 output_dim_dict[0],
                 rank=1
-            ) for _ in range(4)
+            )
+        ] + [
+            TPP(
+                output_dim_dict[0],
+                output_dim_dict[0],
+                feed_forward=True,
+                rank=1
+            ) for _ in range(3)
         ])
 
         # learnable scalar message gating
@@ -160,7 +167,7 @@ class TPPMessagePassing(nn.Module):
         )
         for module in self.message_fusion[1:]:
             # exchange geometric messages while maintaining residual connection to original message
-            new_message = module(message, frame_dict)
+            new_message = module(message_residual, frame_dict)
             message_residual = message_residual + new_message
 
         # learn to gate scalar messages

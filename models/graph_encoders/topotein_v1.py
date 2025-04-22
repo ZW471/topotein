@@ -97,7 +97,7 @@ class TopoteinNetModel(nn.Module):
         batch.frame_dict = {i: localize(batch, rank=i) for i in range(4)}
         batch['pr_vector_attr'] = tensorize(self.pr_pre_tensorize(batch.pr_attr), batch.frame_dict[3], flattened=True).transpose(-1, -2)
         X_dict = self.embed(batch)
-        batch['embeddings'] = X_dict
+        batch['embeddings'] = {k: v for k, v in X_dict.items()}
         for layer in self.interaction_layers:
             X_dict = layer(X_dict, neighbor_dict={
                 "N0_0_via_1": batch.N0_0_via_1,

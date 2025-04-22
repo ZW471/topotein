@@ -31,7 +31,7 @@ class TopoteinInteraction(nn.Module):
                     self.out_ranks.add(to_rank)
         self.gmp_list = nn.ModuleList([
             GeometricMessagePassing(
-                in_dim_dict=self.in_dim_dict,
+                in_dim_dict=self.in_dim_dict,  # TODO: split
                 out_dim_dict=self.out_dim_dict,
                 mapping_dict=mapping_dict,
                 agg_reduce='sum',
@@ -117,12 +117,13 @@ class TPPInteraction(nn.Module):
             TPP(
                 in_dims=ScalarVector(dim_dict[0].scalar * 2, dim_dict[0].vector * 2),
                 out_dims=hidden_dims,
-                rank=0
+                rank=0,
             ),
             TPP(
                 in_dims=hidden_dims,
                 out_dims=dim_dict[0],
                 rank=0,
+                feedforward_out=True,
                 activation="none"
             )
         ])
