@@ -178,10 +178,9 @@ class TCPNetModel(GCPNetModel):
             batch.sse_attr,
             batch.sse_vector_attr
         )
-
+        node_mask = getattr(batch, "mask", None)
         # Craft complete local frames corresponding to each edge
-        batch.f_ij = self.localize(batch, rank=1)
-        batch.f_ij_cell = self.localize(batch, rank=2)
+        batch.frame_dict = {rank: localize(batch, rank, node_mask) for rank in range(3)}
         batch.node_to_sse_mapping = batch.N0_2
 
         # Embed node and edge input features
@@ -193,10 +192,9 @@ class TCPNetModel(GCPNetModel):
                 node_rep=ScalarVector(h, chi),
                 edge_rep=ScalarVector(e, xi),
                 cell_rep=ScalarVector(c, rho),
-                frames=batch.f_ij,
-                cell_frames=batch.f_ij_cell,
+                frame_dict=batch.frame_dict,
                 edge_index=batch.edge_index,
-                node_mask = getattr(batch, "mask", None),
+                node_mask = node_mask,
                 node_pos=batch.pos,
                 node_to_sse_mapping=batch.node_to_sse_mapping,
             )
@@ -217,7 +215,7 @@ class TCPNetModel(GCPNetModel):
                 _, centralized_node_pos = self.centralize(
                     batch, batch_index=batch.batch
                 )
-                batch.f_ij = self.localize(centralized_node_pos, batch.edge_index)
+                batch.frame_dict[1] = self.localize(centralized_node_pos, batch.edge_index)
             encoder_outputs["pos"] = batch.pos  # (n, 3) -> (batch_size, 3)
 
         # Summarize intermediate node representations as final predictions
@@ -227,7 +225,7 @@ class TCPNetModel(GCPNetModel):
                 ScalarVector(h, chi)
             )  # e.g., GCPLayerNorm()
             out = self.invariant_node_projection[1](
-                out, batch.edge_index, batch.f_ij, node_inputs=True
+                out, batch.edge_index, batch.frame_dict[1], node_inputs=True
             )  # e.g., GCP((h, chi)) -> h'
 
         encoder_outputs["node_embedding"] = out
