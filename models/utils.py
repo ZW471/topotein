@@ -293,3 +293,18 @@ def sv_aggregate(sv: ScalarVector, neighborhood_matrix, reduce="sum") -> ScalarV
         dim_size=neighborhood_matrix.size(-1),
         reduce=reduce
     )
+
+def sv_attention(sv: ScalarVector, attention: torch.Tensor):
+    v_dim = sv.vector.shape[1]
+    sv = sv.flatten()
+    if attention.dim() == 2:
+        sv = sv * attention
+        return ScalarVector.recover(sv, v_dim)
+    elif attention.dim() == 3:
+        sv = sv.unsqueeze(-1).repeat(1, 1, attention.shape[-1])
+        sv = torch.einsum("bfa,bia->bfa", sv, attention)
+        sv = [ScalarVector.recover(sv_i.squeeze(-1), v_dim) for sv_i in sv.split(1, dim=-1)]
+        sv = sv[0].concat(sv[1:])
+        return ScalarVector(*sv)
+    else:
+        raise ValueError("Attention tensor must have 2 or 3 dimensions.")
