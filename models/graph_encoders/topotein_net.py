@@ -6,7 +6,7 @@ from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVect
 from proteinworkshop.models.graph_encoders.layers import gcp
 from proteinworkshop.models.utils import get_activations, get_aggregation, centralize
 from proteinworkshop.types import EncoderOutput
-from topotein.models.graph_encoders.layers.tcp import TCPInteractions
+from topotein.models.graph_encoders.layers.tcpnet.interaction import TCPInteractions
 from topotein.models.graph_encoders.layers.topotein_net.backbone_encoder import BackboneEncoder
 from topotein.models.graph_encoders.layers.topotein_net.embedding import TPPEmbedding
 from topotein.models.utils import tensorize, localize

@@ -1,16 +1,14 @@
 from functools import partial
-from typing import List, Union
+from typing import Union
 import hydra
 import torch
 import torch.nn as nn
 from beartype import beartype as typechecker
 from graphein.protein.tensor.data import ProteinBatch
 from jaxtyping import jaxtyped
-from omegaconf import DictConfig
 from torch_geometric.data import Batch
 
 import proteinworkshop.models.graph_encoders.layers.gcp as gcp
-from proteinworkshop import constants
 from proteinworkshop.models.graph_encoders.components.wrappers import (
     ScalarVector,
 )
@@ -22,7 +20,8 @@ from proteinworkshop.models.utils import (
 )
 from topotein.models.utils import localize
 from proteinworkshop.types import EncoderOutput
-from topotein.models.graph_encoders.layers.tcp import TCPEmbedding, TCPInteractions
+from topotein.models.graph_encoders.layers.tcpnet.interaction import TCPInteractions
+from topotein.models.graph_encoders.layers.tcpnet.embedding import TCPEmbedding
 
 
 class TCPNetModel(GCPNetModel):
@@ -237,7 +236,7 @@ class TCPNetModel(GCPNetModel):
 
 if __name__ == "__main__":
 
-    from omegaconf import OmegaConf, DictConfig
+    from omegaconf import OmegaConf
     from proteinworkshop.constants import PROJECT_PATH
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch: ProteinBatch = torch.load(f'{PROJECT_PATH}/../test/data/sample_batch/sample_batch_for_tcp.pt', weights_only=False).to(device)
