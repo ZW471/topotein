@@ -47,7 +47,7 @@ class GeometryLocationAttentionHead(nn.Module):
 
         # Final attention weight computation
         # Input dimension: hidden_dim * 2 (from and to) * 4 (3 for coordinates + 1 for scalar)
-        self.attn_proj = nn.Linear(hidden_dim * 2 * 4, 1, bias=False)
+        self.attn_proj = nn.Linear(hidden_dim * 2 * 3 + 2 * 3, 1, bias=False)
         self.activation = get_activations(activation)
         self.higher_to_lower = higher_to_lower
 

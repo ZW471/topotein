@@ -272,9 +272,9 @@ def to_sse_batch(batch: ProteinBatch):
     return sse_batch
 
 
-def sv_scatter(sv: ScalarVector, indices, dim_size, reduce="sum") -> ScalarVector:
+def sv_scatter(sv: ScalarVector, indices, dim_size, reduce="sum", indexed_input=False) -> ScalarVector:
     vec_dim = sv.vector.shape[1]
-    sv_flattened = sv.flatten()[indices[0]]
+    sv_flattened = sv.flatten()[indices[0]] if not indexed_input else sv.flatten()
     sv_flattened = scatter(
         sv_flattened,
         indices[1],
@@ -286,12 +286,13 @@ def sv_scatter(sv: ScalarVector, indices, dim_size, reduce="sum") -> ScalarVecto
     return sv
 
 
-def sv_aggregate(sv: ScalarVector, neighborhood_matrix, reduce="sum") -> ScalarVector:
+def sv_aggregate(sv: ScalarVector, neighborhood_matrix, reduce="sum", indexed_input=False) -> ScalarVector:
     return sv_scatter(
         sv,
         neighborhood_matrix.indices(),
         dim_size=neighborhood_matrix.size(-1),
-        reduce=reduce
+        reduce=reduce,
+        indexed_input=indexed_input
     )
 
 def sv_attention(sv: ScalarVector, attention: torch.Tensor):
@@ -308,3 +309,9 @@ def sv_attention(sv: ScalarVector, attention: torch.Tensor):
         return ScalarVector(*sv)
     else:
         raise ValueError("Attention tensor must have 2 or 3 dimensions.")
+
+def sv_apply_proj(sv: ScalarVector, proj_s: torch.nn.Module, proj_v: torch.nn.Module):
+    s, v = sv
+    s = proj_s(s)
+    v = proj_v(v.transpose(-1, -2)).transpose(-1, -2)
+    return ScalarVector(s, v)

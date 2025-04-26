@@ -11,9 +11,11 @@ from torch import nn
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.graph_encoders.layers.gcp import GCPInteractions, GCPLayerNorm, GCPDropout
+from topotein.models.graph_encoders.layers.location_attention import GeometryLocationAttention
 from topotein.models.graph_encoders.layers.tcpnet.edge_msg_passing import TCPMessagePassing
 from topotein.models.graph_encoders.layers.tcpnet.tcp import TCP
-from topotein.models.utils import map_to_cell_index, lift_features_with_padding
+from topotein.models.utils import map_to_cell_index, lift_features_with_padding, get_com, sv_scatter, sv_aggregate, \
+    sv_apply_proj
 
 
 class TCPInteractions(GCPInteractions):
@@ -100,7 +102,7 @@ class TCPInteractions(GCPInteractions):
             ff_TCP(
                 (
                     cell_dims.scalar + node_dims.scalar * 2 + edge_dims.scalar,
-                    cell_dims.vector + node_dims.vector * 2+ edge_dims.vector),
+                    cell_dims.vector + node_dims.vector * 2 + edge_dims.vector),
                 hidden_dims,
                 nonlinearities=("none", "none")
                 if layer_cfg.num_feedforward_layers == 1
@@ -133,6 +135,30 @@ class TCPInteractions(GCPInteractions):
 
         self.cell_ff_network = nn.ModuleList(ff_interaction_layers)
 
+        self.attention_head_num = 4
+        self.attentive_node2sse = GeometryLocationAttention(
+            from_vec_dim=node_dims.vector,
+            to_vec_dim=cell_dims.vector,
+            num_heads=self.attention_head_num,
+            hidden_dim=5,
+            activation='silu',
+            concat=True,
+            higher_to_lower=False,
+        )
+        self.W_d_node2sse_s = nn.Linear(node_dims.scalar * self.attention_head_num, node_dims.scalar, bias=False)
+        self.W_d_node2sse_v = nn.Linear(node_dims.vector * self.attention_head_num, node_dims.vector, bias=False)
+        self.attentive_sse2node = GeometryLocationAttention(
+            from_vec_dim=cell_dims.vector,
+            to_vec_dim=node_dims.vector,
+            num_heads=self.attention_head_num,
+            hidden_dim=5,
+            activation='silu',
+            concat=True,
+            higher_to_lower=True,
+        )
+        self.W_d_sse2node_s = nn.Linear(cell_dims.scalar * self.attention_head_num, cell_dims.scalar, bias=False)
+        self.W_d_sse2node_v = nn.Linear(cell_dims.vector * self.attention_head_num, cell_dims.vector, bias=False)
+
     @jaxtyped(typechecker=typechecker)
     def forward(
             self,
@@ -153,6 +179,7 @@ class TCPInteractions(GCPInteractions):
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
             node_pos: Optional[Float[torch.Tensor, "batch_num_nodes 3"]] = None,
             node_to_sse_mapping: torch.Tensor = None,
+            sse_to_node_mapping: torch.Tensor = None,
     ) -> Tuple[
         Tuple[
             Float[torch.Tensor, "batch_num_nodes hidden_dim"],
@@ -179,13 +206,33 @@ class TCPInteractions(GCPInteractions):
         )
 
         # aggregate input and hidden features
-        node_rep_agg = ScalarVector(*[torch_scatter.scatter(
-            rep[node_to_sse_mapping.indices()[0]],
-            node_to_sse_mapping.indices()[1],
-            dim=0,
-            dim_size=node_to_sse_mapping.shape[1],
-            reduce="mean",
-        ) for rep in node_rep.vs()])
+        # node_rep_agg = ScalarVector(*[torch_scatter.scatter(
+        #     rep[node_to_sse_mapping.indices()[0]],
+        #     node_to_sse_mapping.indices()[1],
+        #     dim=0,
+        #     dim_size=node_to_sse_mapping.shape[1],
+        #     reduce="mean",
+        # ) for rep in node_rep.vs()])
+        sse_com = get_com(
+            node_pos[node_to_sse_mapping.indices()[1]],
+            node_to_sse_mapping.indices()[0],
+            node_to_sse_mapping.size()[0]
+        )
+        node_rep_to_sse = self.attentive_node2sse(
+            from_rank_sv=node_rep,
+            to_rank_sv=cell_rep,
+            incidence_matrix=node_to_sse_mapping,
+            from_frame=frame_dict[0],
+            to_frame=frame_dict[2],
+            from_pos=node_pos,
+            to_pos=sse_com
+        )
+        node_rep_agg = sv_aggregate(
+            sv_apply_proj(node_rep_to_sse, self.W_d_node2sse_s, self.W_d_node2sse_v),
+            node_to_sse_mapping,
+            reduce="sum",
+            indexed_input=True
+        )
         cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
         mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] == cell_edge_index[1]))  # mask of columns, select edge inside
 
@@ -204,8 +251,17 @@ class TCPInteractions(GCPInteractions):
                 cell_hidden_residual,
                 frames=frame_dict[2],
             )
-
-        cell_hidden_residual = ScalarVector(*[lift_features_with_padding(res, neighborhood=node_to_sse_mapping) for res in cell_hidden_residual.vs()])
+        sse_rep_to_node = self.attentive_sse2node(
+            from_rank_sv=cell_hidden_residual,
+            to_rank_sv=node_rep,
+            incidence_matrix=sse_to_node_mapping,
+            from_frame=frame_dict[2],
+            to_frame=frame_dict[0],
+            to_pos=node_pos,
+            from_pos=sse_com
+        )
+        sse_rep_to_node = sv_apply_proj(sse_rep_to_node, self.W_d_sse2node_s, self.W_d_sse2node_v)
+        cell_hidden_residual = ScalarVector(*[lift_features_with_padding(res, neighborhood=node_to_sse_mapping) for res in sse_rep_to_node.vs()])
 
         hidden_residual = ScalarVector(*hidden_residual.concat((node_rep, cell_hidden_residual)))  # h_i || m_e || m_c
         # propagate with feedforward layers

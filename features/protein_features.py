@@ -1,31 +1,15 @@
 """Utilities for computing cell features."""
 from typing import List, Union
-
-import numpy as np
 import torch
 import torch_scatter
 from beartype import beartype as typechecker
-from graphein.protein.tensor.data import ProteinBatch
-from graphein.protein.tensor.types import CoordTensor, EdgeTensor
 from jaxtyping import jaxtyped
 from omegaconf import ListConfig
 from torch_geometric.data import Batch, Data
-import toponetx as tnx
-from proteinworkshop.features.utils import _normalize
-from torch.nn.utils.rnn import pad_sequence
-from proteinworkshop.models.utils import centralize
-from topotein.features.topotein_complex import TopoteinComplex
-from topotein.models.utils import localize
-from torch.nn import functional as F
+from torch_scatter import scatter_mean, scatter_std
+from topotein.models.utils import localize, get_com
 
-SSE_FEATURES: List[str] = [
-    "cell_size",
-    "node_features",
-    "edge_features",
-    "cell_type",
-    "sse_vector_norms",
-    "sse_one_hot",
-    "sse_variance_wrt_localized_frame"
+PROTEIN_FEATURES: List[str] = [
 ]
 """List of cell features that can be computed."""
 
@@ -111,6 +95,23 @@ def compute_scalar_protein_features(
             )
             rg = torch.sqrt(d_mean)
             feats.append(rg)
+        elif feature == "eigenvalues":
+            projected_pos = getattr(x, "pos_proj", project_node_positions(x))
+            x["pos_proj"] = projected_pos
+            evals, evecs = get_protein_eigen_features(x, x.pos)
+            linearity = (evals[:, 0] - evals[:, 1]) / evals[:, 0]
+            planarity = (evals[:, 1] - evals[:, 2]) / evals[:, 1]
+            scattering = evals[:, 2] / evals[:, 0]
+            omnivariance = (evals[:, 0] * evals[:, 1] * evals[:, 2]) ** (1 / 3)
+            anisotropy = (evals[:, 0] - evals[:, 2]) / evals[:, 0]
+            feats.append(torch.concat([
+                torch.stack([linearity, planarity, scattering, omnivariance, anisotropy], dim=-1),
+                evals
+            ], dim=1))
+        elif feature == "std_wrt_localized_frame":
+            projected_pos = getattr(x, "pos_proj", project_node_positions(x))
+            x["pos_proj"] = projected_pos
+            feats.append(scatter_std(projected_pos, x.batch.repeat(3, 1).T, dim=0))
         elif feature == "contact_density_and_order":
             batch = x.batch
             num_graphs = int(batch.max().item()) + 1
@@ -172,10 +173,64 @@ def compute_vector_protein_features(
     :raises ValueError: If an unknown vector feature is specified in the
                         ``features`` parameter.
     """
-    vector_cell_features = []
+    feats = []
     for feature in features:
-        if feature == "pr_vectors":  # TODO
-            pass
+        if feature == "eigenvectors":  # TODO
+            projected_pos = getattr(x, "pos_proj", project_node_positions(x))
+            x["pos_proj"] = projected_pos
+            evals, evecs = get_protein_eigen_features(x, x.pos)
+            feats.append(evals)
         else:
             raise ValueError(f"Vector protein feature {feature} not recognised.")
-    return torch.cat(vector_cell_features, dim=1).float()
+    return torch.cat(feats, dim=1).float()
+
+
+def get_protein_eigen_features(batch, projected_pos):
+    # Calculate mean positions for each protein using scatter_mean
+    protein_means = scatter_mean(projected_pos, batch.batch, dim=0)
+
+    # Center the data for all proteins at once
+    centered_pos = projected_pos - protein_means[batch.batch]
+
+    # Get unique proteins
+    unique_proteins = torch.arange(len(batch.id))
+    protein_eigenvalues = []
+    protein_eigenvectors = []
+
+    # Process all proteins
+    for protein_id in unique_proteins:
+        protein_mask = batch.batch == protein_id
+        # Get centered data for this protein
+        protein_centered_data = centered_pos[protein_mask]
+
+        # Calculate covariance matrix
+        N = protein_mask.sum()
+        protein_cov_matrix = torch.mm(protein_centered_data.T, protein_centered_data) / (N - 1)
+
+        # Calculate eigenvalues and eigenvectors
+        protein_evals, protein_evecs = torch.linalg.eigh(protein_cov_matrix)
+
+        # Sort eigenvalues and eigenvectors in descending order
+        idx = torch.argsort(protein_evals, descending=True)
+        protein_evals = protein_evals[idx]
+        protein_evecs = protein_evecs[:, idx]
+
+        # Ensure right-handed coordinate system
+        # Calculate the cross product of first two eigenvectors
+        cross_prod = torch.cross(protein_evecs[:, 0], protein_evecs[:, 1])
+        # If the dot product with the third eigenvector is negative, flip the third eigenvector
+        if torch.dot(cross_prod, protein_evecs[:, 2]) < 0:
+            protein_evecs[:, 2] = -protein_evecs[:, 2]
+
+        protein_eigenvalues.append(protein_evals)
+        protein_eigenvectors.append(protein_evecs)
+
+    return torch.stack(protein_eigenvalues), torch.stack(protein_eigenvectors)
+
+def project_node_positions(batch):
+    pr_com = get_com(
+        batch.pos,
+        cluster_ids=batch.batch,
+        cluster_num=len(batch.id)
+    )
+    return torch.bmm((batch.pos - pr_com[batch.batch]).unsqueeze(1), localize(batch, rank=3)[batch.batch]).squeeze(1)

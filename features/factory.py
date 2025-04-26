@@ -67,7 +67,6 @@ class TopoteinFeaturiser(ProteinFeaturiser):
         #     # )
 
         batch.sse = sse_onehot(batch)  # this is node sse
-
         batch = super().forward(batch)
 
         # cells

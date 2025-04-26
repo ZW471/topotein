@@ -7,8 +7,6 @@ from graphein.protein.tensor.data import ProteinBatch
 import torch
 from jaxtyping import Float, jaxtyped
 
-from topotein.models.graph_encoders.layers.tcpnet.embedding import TCPEmbedding
-from topotein.models.graph_encoders.layers.tcpnet.interaction import TCPInteractions
 from topotein.models.utils import centralize
 
 from proteinworkshop.models.utils import safe_norm
@@ -84,6 +82,9 @@ class TCP(GCP):
 #%%
 
 if __name__ == "__main__":
+    raise NotImplementedError("refactor error unsolved")
+    from topotein.models.graph_encoders.layers.tcpnet.embedding import TCPEmbedding
+    from topotein.models.graph_encoders.layers.tcpnet.interaction import TCPInteractions
     from proteinworkshop.models.utils import localize
     from omegaconf import OmegaConf
     from proteinworkshop.constants import PROJECT_PATH
