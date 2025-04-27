@@ -5,7 +5,7 @@ This module provides implementations of geometry-aware location attention mechan
 """
 import torch
 import torch.nn as nn
-from torch_scatter import scatter_sum
+from torch_scatter import scatter_sum, scatter_softmax
 from proteinworkshop.models.utils import get_activations
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from topotein.models.utils import get_com, sv_attention
@@ -113,12 +113,9 @@ class GeometryLocationAttentionHead(nn.Module):
         v_scalarized = torch.concat([from_v_scalarized, to_v_scalarized], dim=1)
 
         # Compute attention weights
-        exp_up = torch.exp(self.attn_proj(self.activation(v_scalarized)))
-        target_rank_index = 0 if self.higher_to_lower else 1
-        exp_down = scatter_sum(exp_up, incidence_index[target_rank_index], dim=0, dim_size=incidence_size[target_rank_index])[incidence_index[target_rank_index]]
-
-        # Normalize attention weights
-        att = exp_up / exp_down
+        raw = self.attn_proj(self.activation(v_scalarized)).squeeze(-1)
+        att = scatter_softmax(raw, incidence_index[0 if self.higher_to_lower else 1], dim=0, dim_size=incidence_size[1])
+        att = att.unsqueeze(-1)
 
         return att
 
