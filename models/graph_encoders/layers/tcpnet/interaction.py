@@ -180,24 +180,14 @@ class TCPInteractions(GCPInteractions):
 
         self.pr_ff_network = nn.ModuleList(ff_interaction_layers)
 
-        self.attention_head_num = 4
-        # self.attentive_pr2node = GeometryLocationAttention(
-        #     from_vec_dim=pr_dims.vector,
-        #     to_vec_dim=node_dims.vector,
-        #     num_heads=self.attention_head_num,
-        #     hidden_dim=5,
-        #     activation='silu',
-        #     concat=True,
-        #     higher_to_lower=True,
-        # )
-        # self.W_d_pr2node_s = nn.Linear(pr_dims.scalar * self.attention_head_num, pr_dims.scalar, bias=False)
-        # self.W_d_pr2node_v = nn.Linear(pr_dims.vector * self.attention_head_num, pr_dims.vector, bias=False)
+        self.attention_head_num = 8
+        self.attention_hidden_dim = None
 
         self.attentive_node2pr = GeometryLocationAttention(
             from_vec_dim=node_dims.vector,
             to_vec_dim=pr_dims.vector,
             num_heads=self.attention_head_num,
-            hidden_dim=5,
+            hidden_dim=self.attention_hidden_dim,
             activation='silu',
             concat=True,
             higher_to_lower=False,
@@ -209,7 +199,7 @@ class TCPInteractions(GCPInteractions):
             from_vec_dim=pr_dims.vector,
             to_vec_dim=sse_dims.vector,
             num_heads=self.attention_head_num,
-            hidden_dim=5,
+            hidden_dim=self.attention_hidden_dim,
             activation='silu',
             concat=True,
             higher_to_lower=True,
@@ -221,7 +211,7 @@ class TCPInteractions(GCPInteractions):
             from_vec_dim=sse_dims.vector,
             to_vec_dim=pr_dims.vector,
             num_heads=self.attention_head_num,
-            hidden_dim=5,
+            hidden_dim=self.attention_hidden_dim,
             activation='silu',
             concat=True,
             higher_to_lower=False,
@@ -233,7 +223,7 @@ class TCPInteractions(GCPInteractions):
             from_vec_dim=node_dims.vector,
             to_vec_dim=sse_dims.vector,
             num_heads=self.attention_head_num,
-            hidden_dim=5,
+            hidden_dim=self.attention_hidden_dim,
             activation='silu',
             concat=True,
             higher_to_lower=False,
@@ -341,7 +331,7 @@ class TCPInteractions(GCPInteractions):
         node_rep_agg = sv_aggregate(
             sv_apply_proj(node_rep_to_sse, self.W_d_node2sse_s, self.W_d_node2sse_v),
             node_to_sse_mapping,
-            reduce="mean",
+            reduce="sum",
             indexed_input=True
         )
         edge_rep_agg = ScalarVector(*[torch_scatter.scatter(
@@ -349,7 +339,7 @@ class TCPInteractions(GCPInteractions):
             edge_to_sse_mapping.indices()[1],
             dim=0,
             dim_size=edge_to_sse_mapping.shape[1],
-            reduce="mean",
+            reduce="sum",
         ) for rep in edge_rep.vs()])
         pr_rep_to_sse = self.attentive_pr2sse(
             from_rank_sv=pr_rep,
@@ -399,7 +389,7 @@ class TCPInteractions(GCPInteractions):
             to_pos=pr_com[node_to_pr_mapping.indices()[1]]
         )
         node_rep_to_pr = sv_apply_proj(node_rep_to_pr, self.W_d_node2pr_s, self.W_d_node2pr_v)
-        node_rep_to_pr = sv_aggregate(node_rep_to_pr, node_to_pr_mapping, reduce="mean", indexed_input=True)
+        node_rep_to_pr = sv_aggregate(node_rep_to_pr, node_to_pr_mapping, reduce="sum", indexed_input=True)
 
         sse_rep_to_pr = self.attentive_sse2pr(
             from_rank_sv=sse_rep,
@@ -411,7 +401,7 @@ class TCPInteractions(GCPInteractions):
             to_pos=pr_com[sse_to_pr_mapping.indices()[1]]
         )
         sse_rep_to_pr = sv_apply_proj(sse_rep_to_pr, self.W_d_sse2pr_s, self.W_d_sse2pr_v)
-        sse_rep_to_pr = sv_aggregate(sse_rep_to_pr, sse_to_pr_mapping, reduce="mean", indexed_input=True)
+        sse_rep_to_pr = sv_aggregate(sse_rep_to_pr, sse_to_pr_mapping, reduce="sum", indexed_input=True)
 
         pr_hidden_residual = ScalarVector(*node_rep_to_pr.concat((pr_rep, sse_rep_to_pr)))
         for module in self.pr_ff_network:

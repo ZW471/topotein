@@ -42,12 +42,14 @@ class GeometryLocationAttentionHead(nn.Module):
         self.hidden_dim = hidden_dim
 
         # Linear projections for vector features
-        self.from_proj = nn.Linear(from_vec_dim, hidden_dim, bias=False)
-        self.to_proj = nn.Linear(to_vec_dim, hidden_dim, bias=False)
-
-        # Final attention weight computation
-        # Input dimension: hidden_dim * 2 (from and to) * 4 (3 for coordinates + 1 for scalar)
-        self.attn_proj = nn.Linear(hidden_dim * 2 * 3 + 2 * 3, 1, bias=False)
+        if self.hidden_dim is not None:
+            self.from_proj = nn.Linear(from_vec_dim, hidden_dim, bias=False)
+            self.to_proj = nn.Linear(to_vec_dim, hidden_dim, bias=False)
+            self.attn_proj = nn.Linear(hidden_dim * 2 * 3 + 2 * 3, 1, bias=False)
+        else:
+            self.from_proj = nn.Identity()
+            self.to_proj = nn.Identity()
+            self.attn_proj = nn.Linear((from_vec_dim + to_vec_dim) * 3 + 2 * 3, 1, bias=False)
         self.activation = get_activations(activation)
         self.higher_to_lower = higher_to_lower
 
