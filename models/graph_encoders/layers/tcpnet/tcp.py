@@ -139,10 +139,10 @@ if __name__ == "__main__":
     tcp_embedding = TCPEmbedding(
         node_input_dims=[49, 2],
         edge_input_dims=[9, 1],
-        cell_input_dims=[15, 8],
+        sse_input_dims=[15, 8],
         node_hidden_dims=[128, 16],
         edge_hidden_dims=[32, 4],
-        cell_hidden_dims=[128, 16],
+        sse_hidden_dims=[128, 16],
         cfg=cfg
     )
     (h, chi), (e, xi), (c, rho) = tcp_embedding(batch)

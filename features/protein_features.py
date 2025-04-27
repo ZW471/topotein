@@ -179,7 +179,7 @@ def compute_vector_protein_features(
             projected_pos = getattr(x, "pos_proj", project_node_positions(x))
             x["pos_proj"] = projected_pos
             evals, evecs = get_protein_eigen_features(x, x.pos)
-            feats.append(evals)
+            feats.append(evecs)
         else:
             raise ValueError(f"Vector protein feature {feature} not recognised.")
     return torch.cat(feats, dim=1).float()

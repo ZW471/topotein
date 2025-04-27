@@ -16,7 +16,7 @@ class TCPMessagePassing(GCPMessagePassing):
             self,
             node_rep: ScalarVector,
             edge_rep: ScalarVector,
-            cell_rep: ScalarVector,
+            sse_rep: ScalarVector,
             edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
             edge_frames: Float[torch.Tensor, "batch_num_edges 3 3"],
             node_to_sse_mapping: torch.Tensor = None,
@@ -36,27 +36,27 @@ class TCPMessagePassing(GCPMessagePassing):
         node_v_col = node_v_col.reshape(node_v_col.shape[0], node_v_col.shape[1] // 3, 3)
 
         # cell features for edge
-        cell_vector = cell_rep.vector.reshape(
-            cell_rep.vector.shape[0],
-            cell_rep.vector.shape[1] * cell_rep.vector.shape[2],
+        sse_vector = sse_rep.vector.reshape(
+            sse_rep.vector.shape[0],
+            sse_rep.vector.shape[1] * sse_rep.vector.shape[2],
             )
-        cell_scalar = lift_features_with_padding(cell_rep.scalar, neighborhood=node_to_sse_mapping)
-        cell_vector = lift_features_with_padding(cell_vector, neighborhood=node_to_sse_mapping)
+        cell_scalar = lift_features_with_padding(sse_rep.scalar, neighborhood=node_to_sse_mapping)
+        sse_vector = lift_features_with_padding(sse_vector, neighborhood=node_to_sse_mapping)
 
-        vector_reshaped = ScalarVector(cell_scalar, cell_vector)
+        vector_reshaped = ScalarVector(cell_scalar, sse_vector)
 
-        cell_s_row, cell_v_row = vector_reshaped.idx(row)
-        cell_s_col, cell_v_col = vector_reshaped.idx(col)
+        sse_s_row, sse_v_row = vector_reshaped.idx(row)
+        sse_s_col, sse_v_col = vector_reshaped.idx(col)
 
-        cell_v_row = cell_v_row.reshape(cell_v_row.shape[0], cell_v_row.shape[1] // 3, 3)
-        cell_v_col = cell_v_col.reshape(cell_v_col.shape[0], cell_v_col.shape[1] // 3, 3)
+        sse_v_row = sse_v_row.reshape(sse_v_row.shape[0], sse_v_row.shape[1] // 3, 3)
+        sse_v_col = sse_v_col.reshape(sse_v_col.shape[0], sse_v_col.shape[1] // 3, 3)
 
 
         message = edge_rep.concat((
             ScalarVector(node_s_row, node_v_row),
             ScalarVector(node_s_col, node_v_col),
-            ScalarVector(cell_s_row, cell_v_row),
-            ScalarVector(cell_s_col, cell_v_col),
+            ScalarVector(sse_s_row, sse_v_row),
+            ScalarVector(sse_s_col, sse_v_col),
         ))
 
         message_residual = self.message_fusion[0](
@@ -92,14 +92,14 @@ class TCPMessagePassing(GCPMessagePassing):
             self,
             node_rep: ScalarVector,
             edge_rep: ScalarVector,
-            cell_rep: ScalarVector,
+            sse_rep: ScalarVector,
             edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
             edge_frames: Float[torch.Tensor, "batch_num_edges 3 3"],
             node_to_sse_mapping: torch.Tensor = None,
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
     ) -> Tuple[ScalarVector, ScalarVector]:
         message = self.message(
-            node_rep, edge_rep, cell_rep, edge_index, edge_frames, node_to_sse_mapping, node_mask
+            node_rep, edge_rep, sse_rep, edge_index, edge_frames, node_to_sse_mapping, node_mask
         )
         node_aggregate = self.aggregate(
             message, edge_index, dim_size=node_rep.scalar.shape[0]
@@ -107,12 +107,12 @@ class TCPMessagePassing(GCPMessagePassing):
 
         cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
         mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] != cell_edge_index[1]))
-        cell_aggregate = self.aggregate(
-            message[mask], cell_edge_index[:, mask], dim_size=cell_rep.scalar.shape[0]
+        sse_aggregate = self.aggregate(
+            message[mask], cell_edge_index[:, mask], dim_size=sse_rep.scalar.shape[0]
         )
 
         node_aggregate = ScalarVector.recover(node_aggregate, self.vector_output_dim)
-        cell_aggregate = ScalarVector.recover(cell_aggregate, self.vector_output_dim)
+        sse_aggregate = ScalarVector.recover(sse_aggregate, self.vector_output_dim)
 
 
-        return node_aggregate, cell_aggregate
+        return node_aggregate, sse_aggregate

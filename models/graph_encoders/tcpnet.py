@@ -18,6 +18,7 @@ from proteinworkshop.models.utils import (
     decentralize,
     get_aggregation,
 )
+from topotein.models.graph_encoders.layers.tcpnet.tcp import TCP
 from topotein.models.utils import localize
 from proteinworkshop.types import EncoderOutput
 from topotein.models.graph_encoders.layers.tcpnet.interaction import TCPInteractions
@@ -91,10 +92,12 @@ class TCPNetModel(GCPNetModel):
         # Feature dimensionalities
         edge_input_dims = ScalarVector(model_cfg.e_input_dim, model_cfg.xi_input_dim)
         node_input_dims = ScalarVector(model_cfg.h_input_dim, model_cfg.chi_input_dim)
-        cell_input_dims = ScalarVector(model_cfg.c_input_dim, model_cfg.rho_input_dim)
+        sse_input_dims = ScalarVector(model_cfg.c_input_dim, model_cfg.rho_input_dim)
+        pr_input_dims = ScalarVector(model_cfg.p_input_dim, model_cfg.pi_input_dim)
         self.edge_dims = ScalarVector(model_cfg.e_hidden_dim, model_cfg.xi_hidden_dim)
         self.node_dims = ScalarVector(model_cfg.h_hidden_dim, model_cfg.chi_hidden_dim)
-        self.cell_dims = ScalarVector(model_cfg.c_hidden_dim, model_cfg.rho_hidden_dim)
+        self.sse_dims = ScalarVector(model_cfg.c_hidden_dim, model_cfg.rho_hidden_dim)
+        self.pr_dims = ScalarVector(model_cfg.p_hidden_dim, model_cfg.pi_hidden_dim)
 
         # Position-wise operations
         self.centralize = partial(centralize, key="pos")
@@ -102,13 +105,16 @@ class TCPNetModel(GCPNetModel):
         self.decentralize = partial(decentralize, key="pos")
 
         # Input embeddings
+        self.gcp_embedding = None
         self.tcp_embedding = TCPEmbedding(
             node_input_dims=node_input_dims,
             edge_input_dims=edge_input_dims,
-            cell_input_dims=cell_input_dims,
+            sse_input_dims=sse_input_dims,
+            pr_input_dims=pr_input_dims,
             node_hidden_dims=self.node_dims,
             edge_hidden_dims=self.edge_dims,
-            cell_hidden_dims=self.cell_dims,
+            sse_hidden_dims=self.sse_dims,
+            pr_hidden_dims=self.pr_dims,
             cfg=module_cfg
         )
 
@@ -117,7 +123,8 @@ class TCPNetModel(GCPNetModel):
             TCPInteractions(
                 self.node_dims,
                 self.edge_dims,
-                self.cell_dims,
+                self.sse_dims,
+                self.pr_dims,
                 cfg=module_cfg,
                 layer_cfg=layer_cfg,
                 dropout=model_cfg.dropout,
@@ -130,24 +137,29 @@ class TCPNetModel(GCPNetModel):
             self.invariant_node_projection = nn.ModuleList(
                 [
                     gcp.GCPLayerNorm(self.node_dims),
-                    gcp.GCP(
-                        # Note: `GCPNet` defaults to providing SE(3) equivariance
-                        # It is possible to provide E(3) equivariance by instead setting `module_cfg.enable_e3_equivariance=true`
+                    TCP(
                         self.node_dims,
-                        (self.node_dims.scalar, 0),
+                        ScalarVector(self.node_dims.scalar, 0),
                         nonlinearities=tuple(module_cfg.nonlinearities),
                         scalar_gate=module_cfg.scalar_gate,
                         vector_gate=module_cfg.vector_gate,
-                        enable_e3_equivariance=module_cfg.enable_e3_equivariance,
-                        node_inputs=True,
+                        enable_e3_equivariance=module_cfg.enable_e3_equivariance
                     ),
                 ]
             )
 
         # Global pooling/readout function
-        self.readout = get_aggregation(
-            module_cfg.pool
-        )  # {"mean": global_mean_pool, "sum": global_add_pool}[pool]
+        self.readout = nn.ModuleList([
+            gcp.GCPLayerNorm(self.pr_dims),
+            TCP(
+                self.pr_dims,
+                ScalarVector(self.pr_dims.scalar, 0),
+                nonlinearities=tuple(module_cfg.nonlinearities),
+                scalar_gate=module_cfg.scalar_gate,
+                vector_gate=module_cfg.vector_gate,
+                enable_e3_equivariance=module_cfg.enable_e3_equivariance
+            ),
+        ])
 
     @jaxtyped(typechecker=typechecker)
     def forward(self, batch: Union[Batch, ProteinBatch]) -> EncoderOutput:
@@ -169,39 +181,44 @@ class TCPNetModel(GCPNetModel):
         pos_centroid, batch.pos = self.centralize(batch, batch_index=batch.batch)
 
         # Install `h`, `chi`, `e`, and `xi` using corresponding features built by the `FeatureFactory`
-        batch.h, batch.chi, batch.e, batch.xi, batch.c, batch.rho = (
+        batch.h, batch.chi, batch.e, batch.xi, batch.c, batch.rho, batch.p, batch.pi = (
             batch.x,
             batch.x_vector_attr,
             batch.edge_attr,
             batch.edge_vector_attr,
             batch.sse_attr,
-            batch.sse_vector_attr
+            batch.sse_vector_attr,
+            batch.pr_attr,
+            batch.pr_vector_attr
         )
         node_mask = getattr(batch, "mask", None)
         # Craft complete local frames corresponding to each edge
-        batch.frame_dict = {rank: localize(batch, rank, node_mask) for rank in range(3)}
-        batch.node_to_sse_mapping = batch.N0_2
-        batch.sse_to_node_mapping = batch.N2_0
+        batch.frame_dict = {rank: localize(batch, rank, node_mask) for rank in range(4)}
 
         # Embed node and edge input features
-        (h, chi), (e, xi), (c, rho) = self.tcp_embedding(batch)
+        (h, chi), (e, xi), (c, rho), (p, pi) = self.tcp_embedding(batch)
 
         # Update graph features using a series of geometric message-passing layers
         for layer in self.interaction_layers:
-            (h, chi), batch.pos = layer(
+            (h, chi), batch.pos, (p, pi) = layer(  # TODO: also update c, rho?
                 node_rep=ScalarVector(h, chi),
                 edge_rep=ScalarVector(e, xi),
-                cell_rep=ScalarVector(c, rho),
+                sse_rep=ScalarVector(c, rho),
+                pr_rep=ScalarVector(p, pi),
                 frame_dict=batch.frame_dict,
                 edge_index=batch.edge_index,
                 node_mask = node_mask,
                 node_pos=batch.pos,
-                node_to_sse_mapping=batch.node_to_sse_mapping,
-                sse_to_node_mapping=batch.sse_to_node_mapping,
+                node_to_sse_mapping=batch.N0_2,
+                sse_to_node_mapping=batch.N2_0,
+                edge_to_sse_mapping=batch.N1_2,
+                pr_to_sse_mapping=batch.N3_2,
+                node_to_pr_mapping=batch.N0_3,
+                sse_to_pr_mapping=batch.N2_3,
             )
 
         # Record final version of each feature in `Batch` object
-        batch.h, batch.chi, batch.e, batch.xi, batch.c, batch.rho = h, chi, e, xi, c, rho
+        batch.h, batch.chi, batch.e, batch.xi, batch.c, batch.rho, batch.p, batch.pi = h, chi, e, xi, c, rho, p, pi
 
         # initialize encoder outputs
         encoder_outputs = {}
@@ -226,13 +243,13 @@ class TCPNetModel(GCPNetModel):
                 ScalarVector(h, chi)
             )  # e.g., GCPLayerNorm()
             out = self.invariant_node_projection[1](
-                out, batch.edge_index, batch.frame_dict[1], node_inputs=True
+                out, batch.frame_dict[0]
             )  # e.g., GCP((h, chi)) -> h'
-
         encoder_outputs["node_embedding"] = out
-        encoder_outputs["graph_embedding"] = self.readout(
-            out, batch.batch
-        )  # (n, d) -> (batch_size, d)
+
+        graph_out = self.readout[0](ScalarVector(p, pi))
+        graph_out = self.readout[1](graph_out, batch.frame_dict[3])
+        encoder_outputs["graph_embedding"] = graph_out
         return EncoderOutput(encoder_outputs)
 
 

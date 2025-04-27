@@ -12,22 +12,37 @@ from topotein.models.graph_encoders.layers.tcpnet.tcp import TCP
 
 
 class TCPEmbedding(GCPEmbedding):
-    def __init__(self, cell_input_dims, cell_hidden_dims, *args, **kwargs):
+    def __init__(self, sse_input_dims, sse_hidden_dims, pr_input_dims, pr_hidden_dims, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cell_input_dims = cell_input_dims
-        self.cell_hidden_dims = cell_hidden_dims
         self.node_input_dims = kwargs.get("node_input_dims")
         self.node_hidden_dims = kwargs.get("node_hidden_dims")
         self.edge_input_dims = kwargs.get("edge_input_dims")
         self.edge_hidden_dims = kwargs.get("edge_hidden_dims")
+        self.sse_input_dims = sse_input_dims
+        self.sse_hidden_dims = sse_hidden_dims
+        self.pr_input_dims = pr_input_dims
+        self.pr_hidden_dims = pr_hidden_dims
 
         use_gcp_norm = kwargs.get("use_gcp_norm", True)
         nonlinearities = kwargs.get("nonlinearities", ("silu", "silu"))
         cfg = kwargs.get("cfg", None)
 
-        self.cell_normalization = GCPLayerNorm(
-            cell_input_dims if self.pre_norm else cell_hidden_dims,
+        self.sse_normalization = GCPLayerNorm(
+            self.sse_input_dims if self.pre_norm else self.sse_hidden_dims,
             use_gcp_norm=use_gcp_norm
+        )
+        self.pr_normalization = GCPLayerNorm(
+            self.pr_input_dims if self.pre_norm else self.pr_hidden_dims,
+            use_gcp_norm=use_gcp_norm
+        )
+
+        self.node_embedding = TCP(
+            self.node_input_dims,
+            self.node_hidden_dims,
+            nonlinearities=("none", "none"),
+            scalar_gate=cfg.scalar_gate,
+            vector_gate=cfg.vector_gate,
+            enable_e3_equivariance=cfg.enable_e3_equivariance,
         )
 
         self.edge_embedding = TCP(
@@ -39,18 +54,19 @@ class TCPEmbedding(GCPEmbedding):
             enable_e3_equivariance=cfg.enable_e3_equivariance,
         )
 
-        self.node_embedding = TCP(
-            self.node_input_dims,
-            self.node_hidden_dims,
-            nonlinearities=("none", "none"),
+        self.sse_embedding = TCP(
+            self.sse_input_dims,
+            self.sse_hidden_dims,
+            nonlinearities=nonlinearities,
             scalar_gate=cfg.scalar_gate,
             vector_gate=cfg.vector_gate,
             enable_e3_equivariance=cfg.enable_e3_equivariance,
         )
-        self.cell_embedding = TCP(
-            cell_input_dims,
-            cell_hidden_dims,
-            nonlinearities=nonlinearities,
+
+        self.pr_embedding = TCP(
+            self.pr_input_dims,
+            self.pr_hidden_dims,
+            nonlinearities=("none", "none"),
             scalar_gate=cfg.scalar_gate,
             vector_gate=cfg.vector_gate,
             enable_e3_equivariance=cfg.enable_e3_equivariance,
@@ -81,6 +97,13 @@ class TCPEmbedding(GCPEmbedding):
             ],
             Float[torch.Tensor, "batch_num_cells c_hidden_dim"],
         ],
+        Union[
+            Tuple[
+                Float[torch.Tensor, "batch_num_prs p_hidden_dim"],
+                Float[torch.Tensor, "batch_num_prs p pi_hidden_dim"],
+            ],
+            Float[torch.Tensor, "batch_num_prs p_hidden_dim"],
+        ],
     ]:
         if self.atom_embedding is not None:
             node_rep = ScalarVector(self.atom_embedding(batch.h), batch.chi)
@@ -88,7 +111,8 @@ class TCPEmbedding(GCPEmbedding):
             node_rep = ScalarVector(batch.h, batch.chi)
 
         edge_rep = ScalarVector(batch.e, batch.xi)
-        cell_rep = ScalarVector(batch.c, batch.rho)
+        sse_rep = ScalarVector(batch.c, batch.rho)
+        pr_rep = ScalarVector(batch.p, batch.pi)
 
         edge_vectors = (
                 batch.pos[batch.edge_index[0]] - batch.pos[batch.edge_index[1]]
@@ -105,14 +129,18 @@ class TCPEmbedding(GCPEmbedding):
         node_rep = (
             node_rep.scalar if not self.node_embedding.vector_input_dim else node_rep
         )
-        cell_rep = (
-            cell_rep.scalar if not self.cell_embedding.vector_input_dim else cell_rep
+        sse_rep = (
+            sse_rep.scalar if not self.sse_embedding.vector_input_dim else sse_rep
+        )
+        pr_rep = (
+            pr_rep.scalar if not self.pr_embedding.vector_input_dim else pr_rep
         )
 
         if self.pre_norm:
             edge_rep = self.edge_normalization(edge_rep)
             node_rep = self.node_normalization(node_rep)
-            cell_rep = self.cell_normalization(cell_rep)
+            sse_rep = self.sse_normalization(sse_rep)
+            pr_rep = self.pr_normalization(pr_rep)
 
         edge_rep = self.edge_embedding(
             edge_rep,
@@ -122,15 +150,20 @@ class TCPEmbedding(GCPEmbedding):
             node_rep,
             batch.frame_dict[0],
         )
-        cell_rep = self.cell_embedding(
-            cell_rep,
+        sse_rep = self.sse_embedding(
+            sse_rep,
             batch.frame_dict[2]
+        )
+        pr_rep = self.pr_embedding(
+            pr_rep,
+            batch.frame_dict[3]
         )
 
         if not self.pre_norm:
             edge_rep = self.edge_normalization(edge_rep)
             node_rep = self.node_normalization(node_rep)
-            cell_rep = self.cell_normalization(cell_rep)
+            sse_rep = self.sse_normalization(sse_rep)
+            pr_rep = self.pr_normalization(pr_rep)
 
 
-        return node_rep, edge_rep, cell_rep
+        return node_rep, edge_rep, sse_rep, pr_rep
