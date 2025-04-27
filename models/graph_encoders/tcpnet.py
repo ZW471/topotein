@@ -89,6 +89,10 @@ class TCPNetModel(GCPNetModel):
         self.predict_node_pos = module_cfg.predict_node_positions
         self.predict_node_rep = module_cfg.predict_node_rep
 
+        self.sse_update = module_cfg.sse_update
+        self.pr_update = module_cfg.pr_update
+        self.use_tnn_pooling = module_cfg.use_tnn_pooling
+
         # Feature dimensionalities
         edge_input_dims = ScalarVector(model_cfg.e_input_dim, model_cfg.xi_input_dim)
         node_input_dims = ScalarVector(model_cfg.h_input_dim, model_cfg.chi_input_dim)
@@ -132,6 +136,19 @@ class TCPNetModel(GCPNetModel):
             for _ in range(model_cfg.num_layers)
         )
 
+        if self.use_tnn_pooling and not self.pr_update:
+            module_cfg_with_pr_pooling = module_cfg.copy()
+            module_cfg_with_pr_pooling.update({"pr_update": True})
+            self.interaction_layers[-1] = TCPInteractions(
+                self.node_dims,
+                self.edge_dims,
+                self.sse_dims,
+                self.pr_dims,
+                cfg=module_cfg,
+                layer_cfg=layer_cfg,
+                dropout=model_cfg.dropout,
+            )
+
         if self.predict_node_rep:
             # Predictions
             self.invariant_node_projection = nn.ModuleList(
@@ -159,7 +176,9 @@ class TCPNetModel(GCPNetModel):
                 vector_gate=module_cfg.vector_gate,
                 enable_e3_equivariance=module_cfg.enable_e3_equivariance
             ),
-        ])
+        ]) if self.use_tnn_pooling else get_aggregation(
+            module_cfg.pool
+        )
 
     @jaxtyped(typechecker=typechecker)
     def forward(self, batch: Union[Batch, ProteinBatch]) -> EncoderOutput:
@@ -200,7 +219,7 @@ class TCPNetModel(GCPNetModel):
 
         # Update graph features using a series of geometric message-passing layers
         for layer in self.interaction_layers:
-            (h, chi), batch.pos, (p, pi) = layer(  # TODO: also update c, rho?
+            new_reps = layer(  # TODO: also update c, rho?
                 node_rep=ScalarVector(h, chi),
                 edge_rep=ScalarVector(e, xi),
                 sse_rep=ScalarVector(c, rho),
@@ -216,6 +235,11 @@ class TCPNetModel(GCPNetModel):
                 node_to_pr_mapping=batch.N0_3,
                 sse_to_pr_mapping=batch.N2_3,
             )
+            (h, chi), batch.pos = new_reps[0], new_reps[1]
+            if self.sse_update:
+                (c, rho) = new_reps[2]
+            if self.pr_update:
+                (p, pi) = new_reps[3]
 
         # Record final version of each feature in `Batch` object
         batch.h, batch.chi, batch.e, batch.xi, batch.c, batch.rho, batch.p, batch.pi = h, chi, e, xi, c, rho, p, pi
@@ -247,9 +271,13 @@ class TCPNetModel(GCPNetModel):
             )  # e.g., GCP((h, chi)) -> h'
         encoder_outputs["node_embedding"] = out
 
-        graph_out = self.readout[0](ScalarVector(p, pi))
-        graph_out = self.readout[1](graph_out, batch.frame_dict[3])
-        encoder_outputs["graph_embedding"] = graph_out
+        if self.use_tnn_pooling:
+            graph_out = self.readout[0](ScalarVector(p, pi))
+            encoder_outputs["graph_embedding"] =  self.readout[1](graph_out, batch.frame_dict[3])
+        else:
+            encoder_outputs["graph_embedding"] = self.readout(
+                out, batch.batch
+            )  # (n, d) -> (batch_size, d)
         return EncoderOutput(encoder_outputs)
 
 
