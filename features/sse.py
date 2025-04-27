@@ -3,13 +3,20 @@ import pydssp
 from graphein.protein.tensor import Protein
 from graphein.protein.tensor.data import ProteinBatch
 import torch
+from loguru import logger as log
 
 
 @typechecker
-def annotate_protein_sses_pydssp(protein: Protein) -> torch.Tensor:
+def annotate_protein_sses_pydssp(protein: Protein, ignore_error=True) -> torch.Tensor:
     """Annotate secondary structure elements for a protein using PyTorch. Much faster than P-SEA!"""
 
-    return pydssp.assign(protein.coords[:, :4, :], out_type='onehot').float()
+    try:
+        return pydssp.assign(protein.coords[:, :4, :], out_type='onehot').float()
+    except RuntimeError as e:
+        if not ignore_error:
+            raise e
+        log.error(f"Error annotating protein {protein.id}: {e}")
+        return torch.zeros(protein.num_nodes, 3, device=protein.x.device, dtype=torch.float32)
 
 @typechecker
 def sse_onehot(protein_batch: ProteinBatch) -> torch.Tensor:
