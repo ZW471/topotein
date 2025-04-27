@@ -185,6 +185,8 @@ def get_sparse_sse_cell_group(batch: ProteinBatch, sse_batch_idx: torch.Tensor, 
                 continue
             group_list.append(groups_c.T)
 
+        if len(group_list) == 0:
+            continue
         group_list = torch.cat(group_list, dim=1)
         all_groups.append(group_list)
         group_type.append(torch.ones(group_list.shape[-1], device=device, dtype=torch.long) * c)
