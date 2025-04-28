@@ -289,7 +289,7 @@ def get_frames(X_src, X_dst, normalize=True):
     b_vec = norm(torch.cross(X_src, X_dst))
     c_vec = torch.cross(a_vec, b_vec)
 
-    return torch.stack([a_vec, b_vec, c_vec], dim=1)
+    return torch.stack([a_vec, b_vec, c_vec], dim=-1)
 
 def scalarize(vector_reps: torch.Tensor, frames: torch.Tensor, flatten: bool = True) -> torch.Tensor:
     """

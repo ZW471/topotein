@@ -21,6 +21,7 @@ class TCP(GCP):
         frames: Float[torch.Tensor, "batch_num_edges 3 3"],
         enable_e3_equivariance: bool,
     ) -> Float[torch.Tensor, "effective_batch_num_entities out_scalar_dim"]:
+        # important!!! frames in tcp use rows to store vector while frames in gcp use cols
         if enable_e3_equivariance:
             frames[:, 1, :] = frames[:, 1, :].abs()
         return torch.bmm(vector_rep, frames).reshape(vector_rep.shape[0], -1)

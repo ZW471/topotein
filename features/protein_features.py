@@ -176,14 +176,65 @@ def compute_vector_protein_features(
     feats = []
     for feature in features:
         if feature == "eigenvectors":  # TODO
+            raise ValueError("eigenvectors feature can be unstable")
             projected_pos = getattr(x, "pos_proj", project_node_positions(x))
             x["pos_proj"] = projected_pos
             evals, evecs = get_protein_eigen_features(x, x.pos)
             feats.append(evecs)
+        elif feature == "farest_nodes":
+            feats.append(batched_top_k_displacement(x.pos, x.batch, 10))
+        elif feature == "nearest_nodes":
+            feats.append(batched_top_k_displacement(x.pos, x.batch, 10, use_nearest=True))
         else:
             raise ValueError(f"Vector protein feature {feature} not recognised.")
     return torch.cat(feats, dim=1).float()
 
+def batched_top_k_displacement(
+        positions: torch.Tensor,           # (N,3)
+        batch_index:  torch.LongTensor,       # (N,) with values in [0..B-1]
+        K:      int,
+        use_nearest: bool = False,
+) -> torch.Tensor:
+    """
+    Returns a tensor of shape (B, K, 3), where B = batch.max()+1,
+    containing the K farthest points within each batch's point cloud.
+    If a cloud has fewer than K points, its last farthest point is
+    repeated to pad up to K.
+    """
+    B = int(batch_index.max().item()) + 1
+
+    # 1) per-cloud centroid
+    sum_coords = positions.new_zeros((B, 3))
+    sum_coords = sum_coords.index_add(0, batch_index, positions)  # (B,3)
+    counts = torch.bincount(batch_index, minlength=B).unsqueeze(1).to(positions.dtype)  # (B,1)
+    centroids = sum_coords / counts  # (B,3)
+
+    # 2) distance of each point to its batch-centroid
+    diffs = positions - centroids[batch_index]     # (N,3)
+    dist2 = (diffs * diffs).sum(dim=1)     # (N,)
+
+    # 3) top-K per batch, with padding if needed
+    out = []
+    for b in range(B):
+        mask   = (batch_index == b)
+        pts_b  = diffs[mask]              # (Nb,3)
+        d2_b   = dist2[mask]               # (Nb,)
+
+        Nb = pts_b.size(0)
+        if Nb >= K:
+            # straightforward
+            _, idx = torch.topk(d2_b, K, largest=not use_nearest)
+            selected = pts_b[idx]          # (K,3)
+        else:
+            # take all, then pad by repeating the last
+            _, idx = torch.topk(d2_b, Nb, largest=not use_nearest)
+            sel = pts_b[idx]               # (Nb,3)
+            last = sel[-1:].expand(K-Nb, -1)  # (K-Nb,3)
+            selected = torch.cat([sel, last], dim=0)  # (K,3)
+
+        out.append(selected)
+
+    return torch.stack(out, dim=0)  # (B,K,3)
 
 def get_protein_eigen_features(batch, projected_pos):
     # Calculate mean positions for each protein using scatter_mean
