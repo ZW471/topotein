@@ -244,29 +244,29 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
     )
     if rank == 0:
         if node_mask is not None:
-            dst_node_mask = node_mask[batch.edge_index[1]]
+            dst_node_mask = node_mask[batch.edge_index[0]]
             neighbor_com = get_com(
-                positions=batch.pos[batch.edge_index[1]][dst_node_mask],
-                cluster_ids=batch.edge_index[0][dst_node_mask],
+                positions=batch.pos[batch.edge_index[0]][dst_node_mask],
+                cluster_ids=batch.edge_index[1][dst_node_mask],
                 cluster_num=num_of_frames
             )
             frames[node_mask] = get_frames(X_src=batch.pos[node_mask], X_dst=neighbor_com[node_mask], normalize=norm_pos_diff)
         else:
             neighbor_com = get_com(
-                positions=batch.pos[batch.edge_index[1]],
-                cluster_ids=batch.edge_index[0],
+                positions=batch.pos[batch.edge_index[0]],
+                cluster_ids=batch.edge_index[1],
                 cluster_num=num_of_frames
             )
             frames = get_frames(X_src=batch.pos, X_dst=neighbor_com, normalize=norm_pos_diff)
     elif rank == 1:
         if node_mask is not None:
             edge_mask = node_mask[batch.edge_index[0]] & node_mask[batch.edge_index[1]]
-            X_src = batch.pos[batch.edge_index[0]][edge_mask]
-            X_dst = batch.pos[batch.edge_index[1]][edge_mask]
+            X_src = batch.pos[batch.edge_index[1]][edge_mask]
+            X_dst = batch.pos[batch.edge_index[0]][edge_mask]
             frames[edge_mask] = get_frames(X_src, X_dst, normalize=norm_pos_diff)
         else:
-            X_src = batch.pos[batch.edge_index[0]]
-            X_dst = batch.pos[batch.edge_index[1]]
+            X_src = batch.pos[batch.edge_index[1]]
+            X_dst = batch.pos[batch.edge_index[0]]
             frames = get_frames(X_src, X_dst, normalize=norm_pos_diff)
     elif rank == 2:
         if not hasattr(batch, 'N0_2'):

@@ -248,10 +248,10 @@ class TopoteinComplex:
             if from_rank == 1:
                 # this is needed to allow directions in edges
                 col = torch.arange(self.num_edges, device=self.device)
-                row = self.edge_index[1]
+                row = self.edge_index[0]
         elif to_rank == 1:
             if from_rank == 0:
-                col = self.edge_index[0]
+                col = self.edge_index[1]
                 row = torch.arange(self.num_edges, device=self.device)
         elif to_rank == 2:
             if from_rank == 0:

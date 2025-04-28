@@ -3,6 +3,7 @@ from typing import Optional, Tuple
 import torch
 from beartype import beartype as typechecker
 from jaxtyping import jaxtyped, Int64, Float, Bool
+from torch_scatter import scatter
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.graph_encoders.layers.gcp import GCPMessagePassing
@@ -40,11 +41,12 @@ class TCPMessagePassing(GCPMessagePassing):
             sse_rep.vector.shape[0],
             sse_rep.vector.shape[1] * sse_rep.vector.shape[2],
             )
-        cell_scalar = lift_features_with_padding(sse_rep.scalar, neighborhood=node_to_sse_mapping)
+        sse_scalar = lift_features_with_padding(sse_rep.scalar, neighborhood=node_to_sse_mapping)
         sse_vector = lift_features_with_padding(sse_vector, neighborhood=node_to_sse_mapping)
 
-        vector_reshaped = ScalarVector(cell_scalar, sse_vector)
+        vector_reshaped = ScalarVector(sse_scalar, sse_vector)
 
+        # node -> edge
         sse_s_row, sse_v_row = vector_reshaped.idx(row)
         sse_s_col, sse_v_col = vector_reshaped.idx(col)
 
@@ -96,15 +98,25 @@ class TCPMessagePassing(GCPMessagePassing):
             edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
             edge_frames: Float[torch.Tensor, "batch_num_edges 3 3"],
             node_to_sse_mapping: torch.Tensor = None,
+            edge_to_sse_outer_mapping: torch.Tensor = None,
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
     ) -> Tuple[ScalarVector, ScalarVector]:
         message = self.message(
-            node_rep, edge_rep, sse_rep, edge_index, edge_frames, node_to_sse_mapping, node_mask
+            node_rep=node_rep,
+            edge_rep=edge_rep,
+            sse_rep=sse_rep,
+            edge_index=edge_index,
+            edge_frames=edge_frames,
+            node_to_sse_mapping=node_to_sse_mapping,
+            node_mask=node_mask,
         )
         node_aggregate = self.aggregate(
             message, edge_index, dim_size=node_rep.scalar.shape[0]
         )
-
+        # sse_aggregate = scatter(
+        #     message, edge_to_sse_outer_mapping.indices()[1],
+        #     dim=0, dim_size=edge_to_sse_outer_mapping.size()[1], reduce=self.reduce_function
+        # )
         cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
         mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] != cell_edge_index[1]))
         sse_aggregate = self.aggregate(

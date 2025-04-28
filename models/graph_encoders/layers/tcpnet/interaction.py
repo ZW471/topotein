@@ -106,8 +106,8 @@ class TCPInteractions(GCPInteractions):
         ff_interaction_layers = [
             ff_TCP(
                 (
-                    sse_dims.scalar + node_dims.scalar * 2 + edge_dims.scalar + pr_dims.scalar,
-                    sse_dims.vector + node_dims.vector * 2 + edge_dims.vector + pr_dims.vector),
+                    sse_dims.scalar + node_dims.scalar * 2 + pr_dims.scalar,
+                    sse_dims.vector + node_dims.vector * 2 + pr_dims.vector),
                 hidden_dims,
                 nonlinearities=("none", "none")
                 if layer_cfg.num_feedforward_layers == 1
@@ -273,6 +273,8 @@ class TCPInteractions(GCPInteractions):
             node_to_sse_mapping: torch.Tensor = None,
             sse_to_node_mapping: torch.Tensor = None,
             edge_to_sse_mapping: torch.Tensor = None,
+            edge_to_sse_outer_mapping: torch.Tensor = None,
+            sse_to_edge_outer_mapping: torch.Tensor = None,
             pr_to_sse_mapping: torch.Tensor = None,
             node_to_pr_mapping: torch.Tensor = None,
             sse_to_pr_mapping: torch.Tensor = None,
@@ -309,6 +311,7 @@ class TCPInteractions(GCPInteractions):
             edge_frames=frame_dict[1],
             node_mask=node_mask,
             node_to_sse_mapping=node_to_sse_mapping,
+            edge_to_sse_outer_mapping=edge_to_sse_outer_mapping,
         )
 
         # aggregate input and hidden features
@@ -344,13 +347,6 @@ class TCPInteractions(GCPInteractions):
             reduce="sum",
             indexed_input=True
         )
-        edge_rep_agg = ScalarVector(*[torch_scatter.scatter(
-            rep[edge_to_sse_mapping.indices()[0]],
-            edge_to_sse_mapping.indices()[1],
-            dim=0,
-            dim_size=edge_to_sse_mapping.shape[1],
-            reduce="sum",
-        ) for rep in edge_rep.vs()])
         pr_rep_to_sse = self.attentive_pr2sse(
             from_rank_sv=pr_rep,
             to_rank_sv=sse_rep,
@@ -361,8 +357,8 @@ class TCPInteractions(GCPInteractions):
             to_pos=sse_com,
         )
         pr_rep_to_sse = sv_apply_proj(pr_rep_to_sse, self.W_d_pr2sse_s, self.W_d_pr2sse_v)
-        cell_hidden_residual = ScalarVector(*hidden_residual_cell.concat((sse_rep, node_rep_agg, edge_rep_agg, pr_rep_to_sse)))  # c_i || h_i || e_i || m_e
-        # propagate with cell feedforward layers
+        cell_hidden_residual = ScalarVector(*hidden_residual_cell.concat((sse_rep, node_rep_agg, pr_rep_to_sse)))  # c_i || h_i || e_i || m_e
+        # propagate with sse feedforward layers
         for module in self.sse_ff_network:
             cell_hidden_residual = module(
                 cell_hidden_residual,
