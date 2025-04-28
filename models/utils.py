@@ -8,7 +8,7 @@ from beartype import beartype as typechecker
 from graphein.protein.tensor.data import ProteinBatch
 from jaxtyping import Bool, jaxtyped
 from torch_geometric.data import Batch
-from torch_scatter import scatter_mean, scatter, scatter_max
+from torch_scatter import scatter_mean, scatter, scatter_max, scatter_sum
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.utils import safe_norm
@@ -149,60 +149,91 @@ def pca_reduce(tensor: torch.Tensor, k: int):
     return reduced, mean.squeeze(0), U        # mean: [d], U: [d, k]
 
 def get_pca_frames(positions: torch.Tensor,
-                   cluster_ids: torch.Tensor = None,
-                   cluster_num: int = None) -> torch.Tensor:
+                   cluster_ids: torch.LongTensor,
+                   cluster_num: int):
     """
-    Calculate SE(3)-equivariant frames based on PCA for each cluster of positions.
+    Fully vectorized PCA-based frame estimation per cluster.
+
+    Args:
+        positions    Tensor[n, d] of input points (d==3).
+        cluster_ids  LongTensor[n] with values in [0..cluster_num-1].
+        cluster_num  number of clusters.
 
     Returns:
-        frames: tensor of shape [cluster_num, 3, 3]
+        frames: Tensor[cluster_num, 3, 3]  — the 3 principal axes per cluster.
+        means:  Tensor[cluster_num, 3]     — the centroid of each cluster.
     """
     device = positions.device
-    frames = torch.zeros((cluster_num, 3, 3), device=device)
+    U, centered, V = scatter_eigen_decomp(positions, cluster_ids, cluster_num)
 
-    # Helper to build frame from exactly two points
-    def fallback_frame(p1, p2):
-        # primary axis: normalized (p2 - p1)
-        a = (p2 - p1)
-        a = a / a.norm()
-        # choose arbitrary orthogonal vector
-        # here, cross with world-x unless collinear
-        tmp = torch.tensor([1.0, 0.0, 0.0], device=device)
-        if torch.allclose(a.abs(), tmp):
-            tmp = torch.tensor([0.0, 1.0, 0.0], device=device)
-        b = torch.cross(a, tmp)
-        b = b / b.norm()
-        c = torch.cross(a, b)
-        return torch.stack([a, b, c], dim=1)
+    # --- 5) anchor = farthest point from centroid (per cluster) ---------------
+    dist2 = (centered**2).sum(dim=1)                                            # [n]
+    # build mask [c, n] to block out other clusters
+    mask = cluster_ids.unsqueeze(0) == torch.arange(cluster_num, device=device).unsqueeze(1)
+    neg_inf = torch.tensor(-1e20, device=device)
+    masked_d2 = torch.where(mask, dist2.unsqueeze(0), neg_inf)                 # [c, n]
+    _, argmax = masked_d2.max(dim=1)                                           # [c]
+    anchors = centered[argmax]                                                  # [c, d]
 
-    if cluster_ids is None:
-        # Single cluster
-        n, _ = positions.shape
-        if n < 2:
-            # One or zero points: default axes
-            frames[0] = torch.eye(3, device=device)
-        elif n == 2:
-            # Two points: fallback
-            frames[0] = fallback_frame(positions[0], positions[1])
-        else:
-            # >=3 points: use PCA
-            _, mean, U = pca_reduce(positions, 3)
-            frames[0] = U
-    else:
-        # Multiple clusters
-        for cid in torch.unique(cluster_ids):
-            mask = cluster_ids == cid
-            pts = positions[mask]
-            m, _ = pts.shape
-            if m < 2:
-                frames[cid] = torch.eye(3, device=device)
-            elif m == 2:
-                frames[cid] = fallback_frame(pts[0], pts[1])
-            else:
-                _, mean, U = pca_reduce(pts, 3)
-                frames[cid] = U
+    # --- 6) sign-disambiguation: make dot(u_j, anchor) >= 0 --------------------
+    dots = torch.einsum('bd,bdk->bk', anchors, U)                               # [c,3]
+    signs = torch.where(dots >= 0, 1.0, -1.0)                                   # [c,3]
+    U = U * signs.unsqueeze(1)                                                  # [c,3,3]
 
-    return frames
+    # --- 7) ensure right-handed basis (only meaningful for d=3,k=3) -----------
+    cross = torch.cross(U[..., 0], U[..., 1], dim=1)                            # [c,3]
+    dot3  = (cross * U[..., 2]).sum(dim=1)                                      # [c]
+    s3    = torch.where(dot3 >= 0, 1.0, -1.0)                                   # [c]
+    U[..., 2] *= s3.unsqueeze(1)                                                # flip third axis if needed
+
+    return U
+
+
+def scatter_eigen_decomp(positions: torch.Tensor, cluster_ids: torch.Tensor, cluster_num: int) -> Tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute eigen decomposition for data clusters using scatter operations.
+
+    This function performs an eigen decomposition for data points grouped into clusters, using scatter
+    operations to efficiently compute cluster-level statistics. Each cluster is processed independently
+    to determine its covariance matrix, followed by eigen decomposition to extract eigenvectors and
+    eigenvalues representing the principal components of the cluster data.
+
+    :param positions: A tensor of shape (n, d) representing the positions of data points, where `n` is
+        the number of data points and `d` is the dimensionality of the space.
+    :param cluster_ids: A tensor of shape (n,) containing the cluster IDs for each data point. Each
+        cluster ID represents which cluster a data point belongs to.
+    :param cluster_num: An integer specifying the total number of clusters.
+    :return: A tuple containing the following:
+        - `U`: A tensor of shape (c, d, d), where `c` is the number of clusters. This represents the eigenvectors
+          sorted in descending order of their eigenvalues for each cluster.
+        - `centered`: A tensor of shape (n, d), representing the data points after centering based on the mean of
+          their respective clusters.
+        - `V`: A tensor of shape (c, d), representing the eigenvalues sorted in descending order for each cluster.
+    """
+    device = positions.device
+    n, d = positions.shape
+    means = scatter_mean(positions, cluster_ids, dim_size=cluster_num, dim=0)  # [c, d]
+    counts = scatter_sum(torch.ones_like(cluster_ids, device=device), cluster_ids, dim_size=cluster_num, dim=0)
+    # --- 2) center all points by their cluster mean ---
+    centered = positions - means[cluster_ids]  # [n, d]
+    # --- 3) compute per-cluster covariance matrices ---
+    # outer products for each point: [n, d, d]
+    xp = centered.unsqueeze(2) * centered.unsqueeze(1)
+    # flatten to [n, d*d] so we can index_add per cluster:
+    xp_flat = xp.view(n, d * d)
+    C_flat = torch.zeros(cluster_num, d * d, device=device)
+    C_flat = C_flat.index_add(0, cluster_ids, xp_flat)
+    # reshape and normalize by (m-1)
+    C = C_flat.view(cluster_num, d, d) / (counts - 1)[:, None, None]  # [c, d, d]
+    # --- 4) batch eigen-decomposition & sort descending ---
+    eigvals, eigvecs = torch.linalg.eigh(C)  # vals:[c,3], vecs:[c,3,3]
+    idx = torch.argsort(eigvals, descending=True, dim=1)  # [c,3]
+    # eigvecs: [c, d, d], idx: [c, k]
+    idx_expanded = idx.unsqueeze(1).expand(-1, d, -1)  # [c, d, k]
+    U = eigvecs.gather(dim=2, index=idx_expanded)  # [c, d, k]                                              # [c,3,3]
+    V = eigvals.gather(dim=1, index=idx)
+    return U, centered, V
 
 
 def localize(batch, rank, node_mask=None, norm_pos_diff=True):

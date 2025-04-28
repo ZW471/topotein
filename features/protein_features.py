@@ -7,7 +7,7 @@ from jaxtyping import jaxtyped
 from omegaconf import ListConfig
 from torch_geometric.data import Batch, Data
 from torch_scatter import scatter_mean, scatter_std
-from topotein.models.utils import localize, get_com
+from topotein.models.utils import localize, get_com, scatter_eigen_decomp
 
 PROTEIN_FEATURES: List[str] = [
 ]
@@ -98,7 +98,7 @@ def compute_scalar_protein_features(
         elif feature == "eigenvalues":
             projected_pos = getattr(x, "pos_proj", project_node_positions(x))
             x["pos_proj"] = projected_pos
-            evals, evecs = get_protein_eigen_features(x, x.pos)
+            evals, _ = get_protein_eigen_features(x)
             linearity = (evals[:, 0] - evals[:, 1]) / evals[:, 0]
             planarity = (evals[:, 1] - evals[:, 2]) / evals[:, 1]
             scattering = evals[:, 2] / evals[:, 0]
@@ -191,92 +191,75 @@ def compute_vector_protein_features(
 
 def batched_top_k_displacement(
         positions: torch.Tensor,           # (N,3)
-        batch_index:  torch.LongTensor,       # (N,) with values in [0..B-1]
+        batch_index:  torch.LongTensor,    # (N,) with values in [0..B-1]
         K:      int,
         use_nearest: bool = False,
 ) -> torch.Tensor:
-    """
-    Returns a tensor of shape (B, K, 3), where B = batch.max()+1,
-    containing the K farthest points within each batch's point cloud.
-    If a cloud has fewer than K points, its last farthest point is
-    repeated to pad up to K.
-    """
     B = int(batch_index.max().item()) + 1
+    device, dtype = positions.device, positions.dtype
 
     # 1) per-cloud centroid
-    sum_coords = positions.new_zeros((B, 3))
-    sum_coords = sum_coords.index_add(0, batch_index, positions)  # (B,3)
-    counts = torch.bincount(batch_index, minlength=B).unsqueeze(1).to(positions.dtype)  # (B,1)
-    centroids = sum_coords / counts  # (B,3)
+    sum_coords   = positions.new_zeros((B, 3)).index_add_(0, batch_index, positions)
+    counts_long  = torch.bincount(batch_index, minlength=B).to(device)        # (B,)
+    counts       = counts_long.to(dtype).unsqueeze(1)                        # (B,1)
+    centroids    = sum_coords / counts                                       # (B,3)
 
-    # 2) distance of each point to its batch-centroid
-    diffs = positions - centroids[batch_index]     # (N,3)
-    dist2 = (diffs * diffs).sum(dim=1)     # (N,)
+    # 2) displacement & squared‐distance
+    diffs   = positions - centroids[batch_index]                             # (N,3)
+    dist2   = (diffs * diffs).sum(dim=1)                                      # (N,)
 
-    # 3) top-K per batch, with padding if needed
-    out = []
-    for b in range(B):
-        mask   = (batch_index == b)
-        pts_b  = diffs[mask]              # (Nb,3)
-        d2_b   = dist2[mask]               # (Nb,)
+    # 3) group via single sort
+    sorted_idx = torch.argsort(batch_index, stable=True)                     # (N,)
+    diffs_s    = diffs[sorted_idx]                                           # (N,3)
+    d2_s       = dist2[sorted_idx]                                           # (N,)
 
-        Nb = pts_b.size(0)
-        if Nb >= K:
-            # straightforward
-            _, idx = torch.topk(d2_b, K, largest=not use_nearest)
-            selected = pts_b[idx]          # (K,3)
-        else:
-            # take all, then pad by repeating the last
-            _, idx = torch.topk(d2_b, Nb, largest=not use_nearest)
-            sel = pts_b[idx]               # (Nb,3)
-            last = sel[-1:].expand(K-Nb, -1)  # (K-Nb,3)
-            selected = torch.cat([sel, last], dim=0)  # (K,3)
+    # 4) compute start‐offset (“head”) of each batch run
+    head = torch.cat([
+        torch.zeros(1, dtype=torch.long, device=device),
+        counts_long.cumsum(0)[:-1]       # ← no dtype/device args here!
+    ], dim=0)                                                               # (B,)
 
-        out.append(selected)
+    # ...the rest of your code stays exactly the same...
 
-    return torch.stack(out, dim=0)  # (B,K,3)
+    # 5) make sure we can top‐k up to K by padding with the nearest‐of‐group
+    max_cnt = int(counts_long.max().item())
+    pad_len = max(max_cnt, K)
+    arange  = torch.arange(pad_len, device=device)
 
-def get_protein_eigen_features(batch, projected_pos):
+    # clamp into valid indices per‐batch
+    region_arange = arange.unsqueeze(0).expand(B, pad_len)                   # (B,pad_len)
+    region_clamp  = region_arange.clamp(max=(counts_long - 1).unsqueeze(1))  # (B,pad_len)
+    region_idx    = head.unsqueeze(1) + region_clamp                         # (B,pad_len)
+    region_ds     = d2_s[region_idx]                                         # (B,pad_len)
+    nearest_pos   = torch.argmin(region_ds, dim=1)                           # (B,)
+
+    # build full index grid, with pads = nearest_pos
+    in_range = region_arange < counts_long.unsqueeze(1)                      # (B,pad_len)
+    idx_in   = head.unsqueeze(1) + region_arange                             # (B,pad_len)
+    idx_pad  = head.unsqueeze(1) + nearest_pos.unsqueeze(1)                  # (B,pad_len)
+    idx2d    = torch.where(in_range, idx_in, idx_pad)                        # (B,pad_len)
+
+    # gather
+    grp_diffs = diffs_s[idx2d]                                               # (B,pad_len,3)
+    grp_d2    = d2_s[idx2d]                                                  # (B,pad_len)
+
+    # mask pads so they only win when necessary
+    fill = float('inf') if use_nearest else float('-inf')
+    grp_d2 = grp_d2.masked_fill(~in_range, fill)
+
+    # 6) top-K in one go
+    _, topk_inds = torch.topk(grp_d2, K, dim=1, largest=not use_nearest)
+
+    # 7) pull out the vectors
+    topk_inds = topk_inds.unsqueeze(-1).expand(-1, -1, 3)                     # (B,K,3)
+    return torch.gather(grp_diffs, 1, topk_inds)                              # (B,K,3)
+
+
+def get_protein_eigen_features(batch):
     # Calculate mean positions for each protein using scatter_mean
-    protein_means = scatter_mean(projected_pos, batch.batch, dim=0)
+    eigenvec, _, eigenval = scatter_eigen_decomp(batch.pos, batch.batch, len(batch.id))
 
-    # Center the data for all proteins at once
-    centered_pos = projected_pos - protein_means[batch.batch]
-
-    # Get unique proteins
-    unique_proteins = torch.arange(len(batch.id))
-    protein_eigenvalues = []
-    protein_eigenvectors = []
-
-    # Process all proteins
-    for protein_id in unique_proteins:
-        protein_mask = batch.batch == protein_id
-        # Get centered data for this protein
-        protein_centered_data = centered_pos[protein_mask]
-
-        # Calculate covariance matrix
-        N = protein_mask.sum()
-        protein_cov_matrix = torch.mm(protein_centered_data.T, protein_centered_data) / (N - 1)
-
-        # Calculate eigenvalues and eigenvectors
-        protein_evals, protein_evecs = torch.linalg.eigh(protein_cov_matrix)
-
-        # Sort eigenvalues and eigenvectors in descending order
-        idx = torch.argsort(protein_evals, descending=True)
-        protein_evals = protein_evals[idx]
-        protein_evecs = protein_evecs[:, idx]
-
-        # Ensure right-handed coordinate system
-        # Calculate the cross product of first two eigenvectors
-        cross_prod = torch.cross(protein_evecs[:, 0], protein_evecs[:, 1])
-        # If the dot product with the third eigenvector is negative, flip the third eigenvector
-        if torch.dot(cross_prod, protein_evecs[:, 2]) < 0:
-            protein_evecs[:, 2] = -protein_evecs[:, 2]
-
-        protein_eigenvalues.append(protein_evals)
-        protein_eigenvectors.append(protein_evecs)
-
-    return torch.stack(protein_eigenvalues), torch.stack(protein_eigenvectors)
+    return eigenval, eigenvec
 
 def project_node_positions(batch):
     pr_com = get_com(
