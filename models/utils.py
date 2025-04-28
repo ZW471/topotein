@@ -114,15 +114,96 @@ def get_com(positions, cluster_ids=None, cluster_num=None):
     else:
         return scatter_mean(positions, cluster_ids, dim=0, dim_size=cluster_num)
 
-def get_frames(X_src, X_dst, normalize=True):
-    # note that when X_src and X_dst is too close to each other, the frame is not accurate, same applies when X is [0, 0, 0]
-    norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1) if normalize else x
+def pca_reduce(tensor: torch.Tensor, k: int):
+    # 1) center
+    mean = tensor.mean(dim=0, keepdim=True)   # [1, d]
+    X    = tensor - mean                      # [n, d]
 
-    a_vec = norm(X_src - X_dst)
-    b_vec = norm(torch.cross(X_src, X_dst))
-    c_vec = torch.cross(a_vec, b_vec)
+    # 2) covariance
+    n, d = X.shape
+    C    = (X.T @ X) / (n - 1)                # [d, d]
 
-    return torch.stack([a_vec, b_vec, c_vec], dim=1)
+    # 3) eigendecomposition
+    eigvals, eigvecs = torch.linalg.eigh(C)  # ascending eigvals
+    idx = torch.argsort(eigvals, descending=True)
+    U   = eigvecs[:, idx][:, :k]             # [d, k]
+
+    # 4) anchor = vector to farthest point
+    dist2 = (X**2).sum(dim=1)
+    i_max = torch.argmax(dist2)
+    ref   = X[i_max]                          # [d]
+
+    # 5) sign‐disambiguation via anchor
+    for i in range(k):
+        if torch.dot(U[:, i], ref) < 0:
+            U[:, i] = -U[:, i]
+
+    # 6) right‐handed check (only for d==3, k==3)
+    if k == 3 and d == 3:
+        cross = torch.cross(U[:, 0], U[:, 1], dim=0)
+        if torch.dot(cross, U[:, 2]) < 0:
+            U[:, 2] = -U[:, 2]
+
+    # 7) project
+    reduced = X @ U                           # [n, k]
+    return reduced, mean.squeeze(0), U        # mean: [d], U: [d, k]
+
+def get_pca_frames(positions: torch.Tensor,
+                   cluster_ids: torch.Tensor = None,
+                   cluster_num: int = None) -> torch.Tensor:
+    """
+    Calculate SE(3)-equivariant frames based on PCA for each cluster of positions.
+
+    Returns:
+        frames: tensor of shape [cluster_num, 3, 3]
+    """
+    device = positions.device
+    frames = torch.zeros((cluster_num, 3, 3), device=device)
+
+    # Helper to build frame from exactly two points
+    def fallback_frame(p1, p2):
+        # primary axis: normalized (p2 - p1)
+        a = (p2 - p1)
+        a = a / a.norm()
+        # choose arbitrary orthogonal vector
+        # here, cross with world-x unless collinear
+        tmp = torch.tensor([1.0, 0.0, 0.0], device=device)
+        if torch.allclose(a.abs(), tmp):
+            tmp = torch.tensor([0.0, 1.0, 0.0], device=device)
+        b = torch.cross(a, tmp)
+        b = b / b.norm()
+        c = torch.cross(a, b)
+        return torch.stack([a, b, c], dim=1)
+
+    if cluster_ids is None:
+        # Single cluster
+        n, _ = positions.shape
+        if n < 2:
+            # One or zero points: default axes
+            frames[0] = torch.eye(3, device=device)
+        elif n == 2:
+            # Two points: fallback
+            frames[0] = fallback_frame(positions[0], positions[1])
+        else:
+            # >=3 points: use PCA
+            _, mean, U = pca_reduce(positions, 3)
+            frames[0] = U
+    else:
+        # Multiple clusters
+        for cid in torch.unique(cluster_ids):
+            mask = cluster_ids == cid
+            pts = positions[mask]
+            m, _ = pts.shape
+            if m < 2:
+                frames[cid] = torch.eye(3, device=device)
+            elif m == 2:
+                frames[cid] = fallback_frame(pts[0], pts[1])
+            else:
+                _, mean, U = pca_reduce(pts, 3)
+                frames[cid] = U
+
+    return frames
+
 
 def localize(batch, rank, node_mask=None, norm_pos_diff=True):
     num_of_frames = batch.sse_cell_complex._get_size_of_rank(rank)
@@ -161,44 +242,54 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
             batch.N0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
         if not hasattr(batch, 'N2_3'):
             batch.N2_3 = batch.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
-        if not hasattr(batch, 'pos_in_sse'):
-            batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
+        batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
+
         if node_mask is not None:
             in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
-            pr_com = get_com(batch.pos[node_mask], cluster_ids=batch.batch[node_mask], cluster_num=len(batch.id))
-            sse_com = get_com(
+            # Use PCA instead of COM for rank 2
+            sse_frames = get_pca_frames(
                 positions=batch.pos_in_sse[in_sse_node_mask],
                 cluster_ids=batch.N0_2.indices()[1][in_sse_node_mask],
                 cluster_num=num_of_frames
             )
-            sse_mask = get_com(batch.pos_in_sse[in_sse_node_mask].abs(), batch.N0_2.indices()[1][in_sse_node_mask]) != 0.0
-            frames[sse_mask] = get_frames(X_src=sse_com, X_dst=pr_com[batch.N2_3.indices()[1]], normalize=norm_pos_diff)[sse_mask]
+            sse_mask = torch.any(sse_frames != 0, dim=(1, 2))
+            frames[sse_mask] = sse_frames[sse_mask]
         else:
-            pr_com = get_com(batch.pos, cluster_ids=batch.batch, cluster_num=len(batch.id))
-            sse_com = get_com(
+            # Use PCA instead of COM for rank 2
+            frames = get_pca_frames(
                 positions=batch.pos_in_sse,
                 cluster_ids=batch.N0_2.indices()[1],
                 cluster_num=num_of_frames
             )
-            frames = get_frames(X_src=sse_com, X_dst=pr_com[batch.N2_3.indices()[1]], normalize=norm_pos_diff)
     elif rank == 3:
         if node_mask is not None:
-            pr_com = get_com(batch.pos[node_mask], cluster_ids=batch.batch[node_mask], cluster_num=len(batch.id))
-            d2 = ((batch.pos[node_mask] - pr_com[batch.batch][node_mask])**2).sum(dim=1)
-            max_vals, max_idx = scatter_max(d2, batch.batch[node_mask], dim=0)
-            farthest = batch.pos[node_mask][max_idx]
-            frames = get_frames(X_src=pr_com, X_dst=farthest, normalize=norm_pos_diff)
+            # Use PCA instead of COM for rank 3
+            frames = get_pca_frames(
+                positions=batch.pos[node_mask],
+                cluster_ids=batch.batch[node_mask],
+                cluster_num=len(batch.id)
+            )
         else:
-            pr_com = get_com(batch.pos, cluster_ids=batch.batch, cluster_num=len(batch.id))
-            d2 = ((batch.pos - pr_com[batch.batch])**2).sum(dim=1)
-            max_vals, max_idx = scatter_max(d2, batch.batch, dim=0)
-            farthest = batch.pos[max_idx]
-            frames = get_frames(X_src=pr_com, X_dst=farthest, normalize=norm_pos_diff)
+            # Use PCA instead of COM for rank 3
+            frames = get_pca_frames(
+                positions=batch.pos,
+                cluster_ids=batch.batch,
+                cluster_num=len(batch.id)
+            )
     else:
         raise ValueError(f"Invalid rank: {rank}, available ranks are 0, 1, 2, 3")
 
     return frames
 
+def get_frames(X_src, X_dst, normalize=True):
+    # note that when X_src and X_dst is too close to each other, the frame is not accurate, same applies when X is [0, 0, 0]
+    norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1) if normalize else x
+
+    a_vec = norm(X_src - X_dst)
+    b_vec = norm(torch.cross(X_src, X_dst))
+    c_vec = torch.cross(a_vec, b_vec)
+
+    return torch.stack([a_vec, b_vec, c_vec], dim=1)
 
 def scalarize(vector_reps: torch.Tensor, frames: torch.Tensor, flatten: bool = True) -> torch.Tensor:
     """
