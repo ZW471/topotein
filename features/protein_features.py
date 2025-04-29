@@ -7,6 +7,8 @@ from jaxtyping import jaxtyped
 from omegaconf import ListConfig
 from torch_geometric.data import Batch, Data
 from torch_scatter import scatter_mean, scatter_std
+
+from topotein.features.utils import eigenval_features
 from topotein.models.utils import localize, get_com, scatter_eigen_decomp
 
 PROTEIN_FEATURES: List[str] = [
@@ -96,16 +98,11 @@ def compute_scalar_protein_features(
             rg = torch.sqrt(d_mean)
             feats.append(rg)
         elif feature == "eigenvalues":
-            projected_pos = getattr(x, "pos_proj", project_node_positions(x))
-            x["pos_proj"] = projected_pos
+            # projected_pos = getattr(x, "pos_proj", project_node_positions(x))
+            # x["pos_proj"] = projected_pos
             evals, _ = get_protein_eigen_features(x)
-            linearity = (evals[:, 0] - evals[:, 1]) / evals[:, 0]
-            planarity = (evals[:, 1] - evals[:, 2]) / evals[:, 1]
-            scattering = evals[:, 2] / evals[:, 0]
-            omnivariance = (evals[:, 0] * evals[:, 1] * evals[:, 2]) ** (1 / 3)
-            anisotropy = (evals[:, 0] - evals[:, 2]) / evals[:, 0]
             feats.append(torch.concat([
-                torch.stack([linearity, planarity, scattering, omnivariance, anisotropy], dim=-1),
+                torch.stack(eigenval_features(evals), dim=-1),
                 evals
             ], dim=1))
         elif feature == "std_wrt_localized_frame":
@@ -262,9 +259,5 @@ def get_protein_eigen_features(batch):
     return eigenval, eigenvec
 
 def project_node_positions(batch):
-    pr_com = get_com(
-        batch.pos,
-        cluster_ids=batch.batch,
-        cluster_num=len(batch.id)
-    )
+    pr_com = batch.sse_cell_complex.get_com(rank=3)
     return torch.bmm((batch.pos - pr_com[batch.batch]).unsqueeze(1), localize(batch, rank=3)[batch.batch]).squeeze(1)

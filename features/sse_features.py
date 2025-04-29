@@ -1,20 +1,22 @@
 """Utilities for computing cell features."""
 from typing import List, Union
 
-import numpy as np
 import torch
 from beartype import beartype as typechecker
 from graphein.protein.tensor.data import ProteinBatch
-from graphein.protein.tensor.types import CoordTensor, EdgeTensor
 from jaxtyping import jaxtyped
 from omegaconf import ListConfig
 from torch_geometric.data import Batch, Data
 import toponetx as tnx
+from torch_geometric.nn import PositionalEncoding
+from torch_scatter import scatter_mean, scatter_std
+
 from proteinworkshop.features.utils import _normalize
 from torch.nn.utils.rnn import pad_sequence
 from proteinworkshop.models.utils import centralize
 from topotein.features.topotein_complex import TopoteinComplex
-from topotein.models.utils import localize
+from topotein.features.utils import eigenval_features
+from topotein.models.utils import localize, scatter_eigen_decomp, get_pca_frames
 
 SSE_FEATURES: List[str] = [
     "cell_size",
@@ -51,13 +53,42 @@ def compute_scalar_sse_features(
             raise NotImplementedError
         elif feature == "sse_one_hot":
             feats.append(x.sse.to(x.x.device))
-        elif feature == "pos_emb":  # TODO: investigate whether edge pos_emb is actually used first
-            feats.append(pos_emb(x.cell_index))
+        elif feature == "center_pos_encoding":
+            pos_encoding = PositionalEncoding(16)
+            sse_center_pos = scatter_mean(x.seq_pos[x.N0_2.indices()[0]], x.N0_2.indices()[1], dim_size=x.N0_2.size(1), dim=0)
+            sse_center_pos_enc = pos_encoding(sse_center_pos)
+            feats.append(sse_center_pos_enc)
+        elif feature == "se_pos_encoding":
+            pos_encoding = PositionalEncoding(10)
+            start_pos, end_pos = x.sse_cell_index_simple[0], x.sse_cell_index_simple[1]
+            start_pos = pos_encoding(start_pos)
+            end_pos = pos_encoding(end_pos)
+            feats.extend([start_pos, end_pos])
+        elif feature == "consecutive_angle":
+            if not hasattr(x, 'N2_3'):
+                x.N2_3 = x.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
+            if not hasattr(x, 'sse_s2e_vec'):
+                x.sse_s2e_vec = x.pos[x.sse_cell_index_simple[1]] - x.pos[x.sse_cell_index_simple[0]]
+            con_angle = consecutive_angle(x.sse_s2e_vec, x.N2_3.indices()[1])
+            feats.append(con_angle)
+        elif feature == "torsional_angle":
+            if not hasattr(x, 'N2_3'):
+                x.N2_3 = x.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
+            if not hasattr(x, 'sse_s2e_vec'):
+                x.sse_s2e_vec = x.pos[x.sse_cell_index_simple[1]] - x.pos[x.sse_cell_index_simple[0]]
+            torsion_angle = plane_intersection(x.sse_s2e_vec, x.N2_3.indices()[1])
+            feats.append(torsion_angle)
+        elif feature == "eigenvalues":
+            evals, _ = get_sse_eigen_features(x)
+            feats.append(torch.concat([
+                torch.stack(eigenval_features(evals), dim=-1),
+                evals
+            ], dim=1))
         elif feature == "sse_vector_norms":
             vectors = vector_features(x)
             feats.append(torch.norm(torch.stack(vectors, dim=2), dim=1))
-        elif feature == "sse_variance_wrt_localized_frame":
-            feats.append(variance_wrt_localized_frame(x))
+        elif feature == "std_wrt_localized_frame":
+            feats.append(std_wrt_localized_frame(x))
         else:
             raise ValueError(f"Unknown cell feature {feature}")
     feats = [feat.unsqueeze(1) if feat.ndim == 1 else feat for feat in feats]
@@ -88,16 +119,204 @@ def compute_vector_sse_features(
     :raises ValueError: If an unknown vector feature is specified in the
                         ``features`` parameter.
     """
-    vector_cell_features = []
+    vector_sse_features = []
     for feature in features:
         if feature == "sse_vectors":  # TODO
             sse_vectors = vector_features(x)
             for sse_vector in sse_vectors:
-                vector_cell_features.append(_normalize(sse_vector).unsqueeze(-2))
+                vector_sse_features.append(_normalize(sse_vector).unsqueeze(-2))
+        elif feature == "eigenvectors":
+            pca_frame = get_pca_frames(
+                positions=x.pos_in_sse[x.N0_2.indices()[0]],
+                cluster_ids=x.N0_2.indices()[1],
+                cluster_num=x.N0_2.size()[1]
+            )
+            x.sse_pca_frames = pca_frame
+            vector_sse_features.append(pca_frame)
+
+        elif feature == "consecutive_diff":
+            if not hasattr(x, 'N2_3'):
+                x.N2_3 = x.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
+            vector_sse_features.append(consecutive_differences(
+                x.sse_cell_complex.get_com(2),
+                x.N2_3.indices()[1]
+            ))
+        elif feature == "pr_com_diff":
+            pr_com = x.sse_cell_complex.get_com(3)[x.N2_3.indices()[1]]
+            sse_com = x.sse_cell_complex.get_com(2)
+            start_pos, end_pos = x.pos[x.sse_cell_index_simple[0]], x.pos[x.sse_cell_index_simple[1]]
+            start_diff = start_pos - pr_com
+            end_diff = end_pos - pr_com
+            com_diff = sse_com - pr_com
+            vector_sse_features.append(torch.stack([start_diff, com_diff, end_diff], dim=1))
         else:
             raise ValueError(f"Vector feature {feature} not recognised.")
-    return torch.cat(vector_cell_features, dim=1).float()
+    return torch.cat(vector_sse_features, dim=1).float()
 
+
+def consecutive_differences(
+        vectors: torch.Tensor,
+        batch_index: torch.Tensor,
+        eps: float = 1e-8
+) -> torch.Tensor:
+    """
+    vectors:     (N,3) tensor of 3D vectors (zero‐vector == padding)
+    batch_index: (N,)   tensor of ints indicating cluster membership
+
+    returns:     (N,6) tensor whose columns are
+                 [Δ_prev_x, Δ_prev_y, Δ_prev_z, Δ_next_x, Δ_next_y, Δ_next_z],
+                 where
+                   Δ_prev = v[i]   - v[i-1]
+                   Δ_next = v[i+1] - v[i]
+                 Any entry touching a padding vector or crossing a batch
+                 boundary (or at the very first/last index) is zeroed.
+    """
+    N = vectors.shape[0]
+    assert batch_index.shape[0] == N, "batch_index must match vectors length"
+    device, dtype = vectors.device, vectors.dtype
+
+    # compute raw diffs between neighbors: v_next - v_prev, length N-1
+    v_prev = vectors[:-1]    # (N-1, 3)
+    v_next = vectors[1:]     # (N-1, 3)
+    diffs  = v_next - v_prev # (N-1, 3)
+
+    # identify invalid pairs
+    is_zero_prev = v_prev.norm(dim=1) < eps
+    is_zero_next = v_next.norm(dim=1) < eps
+    same_batch   = batch_index[1:] == batch_index[:-1]
+    invalid      = is_zero_prev | is_zero_next | (~same_batch)
+
+    # zero out invalid diffs
+    diffs = diffs.clone()
+    diffs[invalid] = 0.0
+
+    # build Δ_prev: zero at i=0, then diffs for i=1..N-1
+    zero3 = torch.zeros(1, 3, device=device, dtype=dtype)
+    delta_prev = torch.cat([zero3, diffs], dim=0)    # (N,3)
+
+    # build Δ_next: diffs for i=0..N-2, then zero at i=N-1
+    delta_next = torch.cat([diffs, zero3], dim=0)    # (N,3)
+
+    # concatenate to (N,6)
+    return torch.cat([delta_prev.unsqueeze(1), delta_next.unsqueeze(1)], dim=1)
+
+def plane_intersection(
+        vectors: torch.Tensor,
+        batch_index: torch.Tensor,
+        eps: float = 1e-8
+) -> torch.Tensor:
+    """
+    vectors:     (N,3) tensor of 3D vectors (zero‐vector == padding)
+    batch_index: (N,)   tensor of ints indicating cluster membership
+
+    returns:     (N,2) tensor [sin(phi), cos(phi)] of the dihedral angle
+                 between plane({v[i-1],v[i]}) and plane({v[i],v[i+1]}),
+                 with zeros at edges, batch‐changes, or padding.
+    """
+    N = vectors.shape[0]
+    assert batch_index.shape[0] == N
+
+    # build triplets v_prev, v_mid, v_next for i=1..N-2
+    v_prev = vectors[:-2]    # (N-2,3)
+    v_mid  = vectors[1:-1]   # (N-2,3)
+    v_next = vectors[2:]     # (N-2,3)
+
+    # normals to each plane
+    n1 = torch.cross(v_prev, v_mid,  dim=1)  # (N-2,3)
+    n2 = torch.cross(v_mid,  v_next, dim=1)  # (N-2,3)
+
+    # dot and cross‐norm of normals
+    dot       = (n1 * n2).sum(dim=1)               # (N-2,)
+    cross_norm = torch.cross(n1, n2, dim=1).norm(dim=1)  # (N-2,)
+
+    # norms of normals
+    n1_norm = n1.norm(dim=1)                       # (N-2,)
+    n2_norm = n2.norm(dim=1)                       # (N-2,)
+    denom   = n1_norm * n2_norm                    # (N-2,)
+
+    # raw sin & cos
+    cos_raw = dot       / (denom + eps)
+    sin_raw = cross_norm / (denom + eps)
+
+    # clamp cos
+    cos_clamped = cos_raw.clamp(-1.0, 1.0)
+
+    # mask invalid: padding or batch‐boundary anywhere in the triplet
+    is_pad   = denom < eps
+    same_batch = (
+            (batch_index[:-2] == batch_index[1:-1]) &
+            (batch_index[1:-1] == batch_index[2:])
+    )
+    invalid = is_pad | (~same_batch)
+
+    sin_raw     = sin_raw.clone()
+    cos_clamped = cos_clamped.clone()
+    sin_raw[invalid]      = 0.0
+    cos_clamped[invalid]  = 0.0
+
+    # pad zeros at front and back to make length N
+    zero = torch.zeros(1, device=vectors.device, dtype=vectors.dtype)
+    sin = torch.cat([zero, sin_raw, zero], dim=0)     # (N,)
+    cos = torch.cat([zero, cos_clamped, zero], dim=0) # (N,)
+
+    return torch.stack([sin, cos], dim=1)             # (N,2)
+
+def consecutive_angle(
+        vectors: torch.Tensor,
+        batch_index: torch.Tensor,
+        eps: float = 1e-8
+) -> torch.Tensor:
+    """
+    vectors:     (N,3) tensor of 3D vectors (zero‐vector == padding)
+    batch_index: (N,)   tensor of ints indicating cluster membership
+
+    returns:     (N,4) tensor whose columns are
+                 [sin_prev, cos_prev, sin_next, cos_next]
+    """
+    N = vectors.shape[0]
+    assert batch_index.shape[0] == N, "batch_index must be length N"
+
+    # pairs (i, i+1)
+    v1 = vectors[:-1]          # (N-1, 3)
+    v2 = vectors[1:]           # (N-1, 3)
+
+    # compute dot and cross mag
+    dot    = (v1 * v2).sum(dim=1)             # (N-1,)
+    cross  = torch.cross(v1, v2, dim=1).norm(dim=1)  # (N-1,)
+
+    # norms and denom
+    n1     = v1.norm(dim=1)                   # (N-1,)
+    n2     = v2.norm(dim=1)                   # (N-1,)
+    denom  = n1 * n2                          # (N-1,)
+
+    # raw sin/cos (avoid div-0)
+    cos_raw   = dot   / (denom + eps)
+    sin_raw   = cross / (denom + eps)
+
+    # clamp cos to valid range
+    cos_clamped = cos_raw.clamp(-1.0, 1.0)
+
+    # mask out invalid pairs
+    is_padding = denom < eps
+    same_batch = batch_index[:-1] == batch_index[1:]
+    invalid    = is_padding | (~same_batch)
+
+    sin_raw   = sin_raw.clone()
+    cos_clamped = cos_clamped.clone()
+    sin_raw[invalid]      = 0.0
+    cos_clamped[invalid]  = 0.0
+
+    # build prev angles: pad at front
+    zero = torch.zeros(1, device=vectors.device, dtype=vectors.dtype)
+    sin_prev = torch.cat([zero, sin_raw],      dim=0)  # (N,)
+    cos_prev = torch.cat([zero, cos_clamped],  dim=0)
+
+    # build next angles: pad at end
+    sin_next = torch.cat([sin_raw,      zero], dim=0)  # (N,)
+    cos_next = torch.cat([cos_clamped,  zero], dim=0)
+
+    # stack into (N,4)
+    return torch.stack([sin_prev, cos_prev, sin_next, cos_next], dim=1)
 
 @jaxtyped(typechecker=typechecker)
 def compute_sse_sizes(cell_complex: Union[tnx.CellComplex, TopoteinComplex]) -> torch.Tensor:
@@ -156,39 +375,24 @@ def get_means_by_group(features: torch.Tensor, groups: tuple[tuple[int, ...], ..
     return means
 
 
-@jaxtyped(typechecker=typechecker)
-def pos_emb(cell_index: EdgeTensor, num_pos_emb: int = 16):
-    raise NotImplementedError
-    # From https://github.com/jingraham/neurips19-graph-protein-design
-    d = cell_index[0] - cell_index[1]
-
-    frequency = torch.exp(
-        torch.arange(
-            0, num_pos_emb, 2, dtype=torch.float32, device=cell_index.device
-        )
-        * -(np.log(10000.0) / num_pos_emb)
+def get_sse_eigen_features(batch):
+    # Calculate mean positions for each protein using scatter_mean
+    if not hasattr(batch, 'N0_2'):
+        batch.N0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
+    eigenvec, _, eigenval = scatter_eigen_decomp(
+        batch.pos[batch.N0_2.indices()[0]],
+        batch.N0_2.indices()[1],
+        batch.N0_2.size(1)
     )
-    angles = d.unsqueeze(-1) * frequency
-    return torch.cat((torch.cos(angles), torch.sin(angles)), -1)
+
+    return eigenval, eigenvec
 
 
 @jaxtyped(typechecker=typechecker)
-def variance_wrt_localized_frame(batch: ProteinBatch) -> torch.Tensor:
-    ori_pos = batch.pos
-    _, batch.pos = centralize(batch, key='pos', batch_index=batch.batch)
-    frames = localize(batch, rank=2)
-
-    results = []
-    n_segments = batch.sse_cell_index_simple.shape[1]
-    for i in range(n_segments):
-        start = batch.sse_cell_index_simple[0, i]
-        end = batch.sse_cell_index_simple[1, i] + 1
-        # Process the segment
-        seg_result = (batch.pos[start:end, :] @ frames[i]).var(dim=0)
-        results.append(seg_result)
-    # Stack the variance results; shape: (n_segments, output_features)
-    batch.pos = ori_pos
-    return torch.stack(results, dim=0)
+def std_wrt_localized_frame(batch: ProteinBatch) -> torch.Tensor:
+    sse_com = batch.sse_cell_complex.get_com(rank=2)
+    projected_pos = torch.bmm((batch.pos[batch.N0_2.indices()[0]] - sse_com[batch.N0_2.indices()[1]]).unsqueeze(1), localize(batch, rank=2)[batch.N0_2.indices()[1]]).squeeze(1)
+    return scatter_std(projected_pos, batch.N0_2.indices()[1].repeat(3, 1).T, dim=0)
 
 
 @jaxtyped(typechecker=typechecker)
