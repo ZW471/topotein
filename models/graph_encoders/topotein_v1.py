@@ -95,7 +95,6 @@ class TopoteinNetModel(nn.Module):
     def forward(self, batch):
         pos_centroid, batch.pos = centralize(batch, batch_index=batch.batch, key="pos")
         batch.frame_dict = {i: localize(batch, rank=i) for i in range(4)}
-        batch['pr_vector_attr'] = tensorize(self.pr_pre_tensorize(batch.pr_attr), batch.frame_dict[3], flattened=True).transpose(-1, -2)
         X_dict = self.embed(batch)
         batch['embeddings'] = {k: v for k, v in X_dict.items()}
         for layer in self.interaction_layers:
