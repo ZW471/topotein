@@ -54,12 +54,12 @@ def compute_scalar_sse_features(
         elif feature == "sse_one_hot":
             feats.append(x.sse.to(x.x.device))
         elif feature == "center_pos_encoding":
-            pos_encoding = PositionalEncoding(16)
+            pos_encoding = PositionalEncoding(16).to(x.pos.device)
             sse_center_pos = scatter_mean(x.seq_pos[x.N0_2.indices()[0]], x.N0_2.indices()[1], dim_size=x.N0_2.size(1), dim=0)
             sse_center_pos_enc = pos_encoding(sse_center_pos)
             feats.append(sse_center_pos_enc)
         elif feature == "se_pos_encoding":
-            pos_encoding = PositionalEncoding(10)
+            pos_encoding = PositionalEncoding(10).to(x.pos.device)
             start_pos, end_pos = x.sse_cell_index_simple[0], x.sse_cell_index_simple[1]
             start_pos = pos_encoding(start_pos)
             end_pos = pos_encoding(end_pos)
