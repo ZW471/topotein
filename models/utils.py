@@ -276,22 +276,63 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
         batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
 
         if node_mask is not None:
-            in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
-            # Use PCA instead of COM for rank 2
-            sse_frames = get_pca_frames(
-                positions=batch.pos_in_sse[in_sse_node_mask],
-                cluster_ids=batch.N0_2.indices()[1][in_sse_node_mask],
-                cluster_num=num_of_frames
+            # in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
+            # # Use PCA instead of COM for rank 2
+            # sse_frames = get_pca_frames(
+            #     positions=batch.pos_in_sse[in_sse_node_mask],
+            #     cluster_ids=batch.N0_2.indices()[1][in_sse_node_mask],
+            #     cluster_num=num_of_frames
+            # )
+            # sse_mask = torch.any(sse_frames != 0, dim=(1, 2))
+            # frames[sse_mask] = sse_frames[sse_mask]
+
+            pr_com_pre_centering = get_com(
+                positions=batch.pos[node_mask],
+                cluster_ids=batch.batch[node_mask],
+                cluster_num=len(batch.id)
             )
-            sse_mask = torch.any(sse_frames != 0, dim=(1, 2))
-            frames[sse_mask] = sse_frames[sse_mask]
+
+            batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
+
+            sse_com = get_com(
+                positions=batch.pos[batch.N0_2.indices()[0]][node_mask],
+                cluster_ids=batch.N0_2.indices()[1][node_mask],
+                cluster_num=batch.N0_2.size()[1]
+            )
+
+            farest_idx = scatter_max((batch.pos[node_mask] ** 2).sum(dim=-1), batch.batch)[1]
+            pr_farest = batch.pos[node_mask][farest_idx]
+
         else:
             # Use PCA instead of COM for rank 2
-            frames = get_pca_frames(
-                positions=batch.pos_in_sse,
-                cluster_ids=batch.N0_2.indices()[1],
-                cluster_num=num_of_frames
+            # frames = get_pca_frames(
+            #     positions=batch.pos_in_sse,
+            #     cluster_ids=batch.N0_2.indices()[1],
+            #     cluster_num=num_of_frames
+            # )
+            pr_com_pre_centering = get_com(
+                positions=batch.pos,
+                cluster_ids=batch.batch,
+                cluster_num=len(batch.id)
             )
+
+            batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
+
+            sse_com = get_com(
+                positions=batch.pos[batch.N0_2.indices()[0]],
+                cluster_ids=batch.N0_2.indices()[1],
+                cluster_num=batch.N0_2.size()[1]
+            )
+
+            farest_idx = scatter_max((batch.pos ** 2).sum(dim=-1), batch.batch)[1]
+            pr_farest = batch.pos[farest_idx]
+
+        norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1e-8)
+        a_vec = norm(-sse_com)
+        b_vec = norm(torch.cross(-sse_com, pr_farest[batch.N2_3.indices()[1]], dim=-1))
+        c_vec = norm(torch.cross(b_vec, a_vec, dim=-1))
+
+        frames = torch.stack([a_vec, b_vec, c_vec], dim=-1)
     elif rank == 3:
         if node_mask is not None:
             # Use PCA instead of COM for rank 3
@@ -314,7 +355,7 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
 
 def get_frames(X_src, X_dst, normalize=True):
     # note that when X_src and X_dst is too close to each other, the frame is not accurate, same applies when X is [0, 0, 0]
-    norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1) if normalize else x
+    norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1e-8) if normalize else x
 
     a_vec = norm(X_src - X_dst)
     b_vec = norm(torch.cross(X_src, X_dst))
