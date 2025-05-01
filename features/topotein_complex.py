@@ -134,6 +134,8 @@ class TopoteinComplex:
         self.node_pos = node_pos
         self.com_dict = {}
 
+        self.calculator = None
+
     def get_com(self, rank):
         com = None
         if self.use_cache:

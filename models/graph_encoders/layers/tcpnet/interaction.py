@@ -10,7 +10,9 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
-from proteinworkshop.models.graph_encoders.layers.gcp import GCPInteractions, GCPLayerNorm, GCPDropout
+from proteinworkshop.models.graph_encoders.layers.gcp import GCPInteractions, GCPLayerNorm, GCPDropout, \
+    GCPMessagePassing
+from topotein.features.topotein_complex import TopoteinComplex
 from topotein.models.graph_encoders.layers.location_attention import GeometryLocationAttention
 from topotein.models.graph_encoders.layers.tcpnet.edge_msg_passing import TCPMessagePassing
 from topotein.models.graph_encoders.layers.tcpnet.tcp import TCP
@@ -22,12 +24,18 @@ class TCPInteractions(GCPInteractions):
     def __init__(self, node_dims: ScalarVector, edge_dims: ScalarVector, sse_dims: ScalarVector, pr_dims: ScalarVector, cfg: DictConfig, layer_cfg: DictConfig,
                  dropout: float = 0.0, nonlinearities: Optional[Tuple[Any, Any]] = None):
         super().__init__(node_dims, edge_dims, cfg, layer_cfg, dropout, nonlinearities)
-        self.interaction = TCPMessagePassing(
-            ScalarVector(
-                node_dims.scalar + sse_dims.scalar,
-                node_dims.vector + sse_dims.vector,
-            ),
+        self.interaction = GCPMessagePassing(
             node_dims,
+            node_dims,
+            edge_dims,
+            cfg=cfg,
+            mp_cfg=layer_cfg.mp_cfg,
+            reduce_function="sum",
+            use_scalar_message_attention=layer_cfg.use_scalar_message_attention,
+        )
+        self.interaction_sse = GCPMessagePassing(
+            sse_dims,
+            sse_dims,
             edge_dims,
             cfg=cfg,
             mp_cfg=layer_cfg.mp_cfg,
@@ -62,8 +70,8 @@ class TCPInteractions(GCPInteractions):
         ff_interaction_layers = [
             ff_TCP(
                 (
-                    node_dims.scalar * 2 + sse_dims.scalar,
-                    node_dims.vector * 2 + sse_dims.vector,
+                    node_dims.scalar * 2,
+                    node_dims.vector * 2,
                 ),
                 hidden_dims,
                 nonlinearities=("none", "none")
@@ -97,6 +105,44 @@ class TCPInteractions(GCPInteractions):
 
         self.feedforward_network = nn.ModuleList(ff_interaction_layers)
 
+        ff_interaction_layers_2 = [
+            ff_TCP(
+                (
+                    node_dims.scalar + sse_dims.scalar,
+                    node_dims.vector + sse_dims.vector,
+                ),
+                hidden_dims,
+                nonlinearities=("none", "none")
+                if layer_cfg.num_feedforward_layers == 1
+                else cfg.nonlinearities,
+                feedforward_out=layer_cfg.num_feedforward_layers == 1,
+                enable_e3_equivariance=cfg.enable_e3_equivariance,
+            )
+        ]
+
+        interaction_layers = [
+            ff_TCP(
+                hidden_dims,
+                hidden_dims,
+                enable_e3_equivariance=cfg.enable_e3_equivariance,
+            )
+            for _ in range(layer_cfg.num_feedforward_layers - 2)
+        ]
+        ff_interaction_layers_2.extend(interaction_layers)
+
+        if layer_cfg.num_feedforward_layers > 1:
+            ff_interaction_layers_2.append(
+                ff_TCP(
+                    hidden_dims,
+                    node_dims,
+                    nonlinearities=("none", "none"),
+                    feedforward_out=True,
+                    enable_e3_equivariance=cfg.enable_e3_equivariance,
+                )
+            )
+
+        self.feedforward_network_2 = nn.ModuleList(ff_interaction_layers_2)
+
         # build out feedforward (FF) network modules for sses
         hidden_dims = (
             (sse_dims.scalar, sse_dims.vector)
@@ -106,8 +152,8 @@ class TCPInteractions(GCPInteractions):
         ff_interaction_layers = [
             ff_TCP(
                 (
-                    sse_dims.scalar + node_dims.scalar * 2 + pr_dims.scalar,
-                    sse_dims.vector + node_dims.vector * 2 + pr_dims.vector),
+                    sse_dims.scalar * 2 + node_dims.scalar + pr_dims.scalar,
+                    sse_dims.vector * 2 + node_dims.vector + pr_dims.vector),
                 hidden_dims,
                 nonlinearities=("none", "none")
                 if layer_cfg.num_feedforward_layers == 1
@@ -141,7 +187,7 @@ class TCPInteractions(GCPInteractions):
         self.sse_ff_network = nn.ModuleList(ff_interaction_layers)
 
         self.attention_head_num = 4
-        self.attention_hidden_dim = None
+        self.attention_hidden_dim = 4
 
         self.attentive_node2sse = GeometryLocationAttention(
             from_sv_dim=node_dims,
@@ -260,6 +306,7 @@ class TCPInteractions(GCPInteractions):
             frame_dict,
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
             node_pos: Optional[Float[torch.Tensor, "batch_num_nodes 3"]] = None,
+            ccc: TopoteinComplex = None,
             node_to_sse_mapping: torch.Tensor = None,
             sse_to_node_mapping: torch.Tensor = None,
             edge_to_sse_mapping: torch.Tensor = None,
@@ -283,9 +330,6 @@ class TCPInteractions(GCPInteractions):
             Float[torch.Tensor, "batch_num_pr p_out 3"],
         ],
     ]:
-        node_rep = ScalarVector(node_rep[0], node_rep[1])
-        edge_rep = ScalarVector(edge_rep[0], edge_rep[1])
-
         # apply GCP normalization (1)
         if self.pre_norm:
             node_rep = self.gcp_norm["0"](node_rep)
@@ -293,31 +337,38 @@ class TCPInteractions(GCPInteractions):
             pr_rep = self.gcp_norm["3"](pr_rep) if self.pr_update else pr_rep
 
         # forward propagate with interaction module
-        hidden_residual, hidden_residual_cell = self.interaction(
+        hidden_residual = self.interaction(
             node_rep=node_rep,
             edge_rep=edge_rep,
-            sse_rep=sse_rep,
             edge_index=edge_index,
-            edge_frames=frame_dict[1],
-            node_mask=node_mask,
-            node_to_sse_mapping=node_to_sse_mapping,
-            edge_to_sse_outer_mapping=edge_to_sse_outer_mapping,
+            frames=frame_dict[1].transpose(-1, -2),  # gcp stores frames differently
+            node_mask=node_mask
         )
 
+        cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
+        mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] != cell_edge_index[1]))
+        sse_hidden_residual = self.interaction_sse(
+            node_rep=sse_rep,
+            edge_rep=edge_rep.idx(mask),
+            edge_index=cell_edge_index[:, mask],
+            frames=frame_dict[1].transpose(-1, -2)[mask],
+        )
+
+        hidden_residual = ScalarVector(*hidden_residual.concat((node_rep,)))  # h_i || m_e || m_c
+        # propagate with feedforward layers
+        for module in self.feedforward_network:
+            hidden_residual = module(
+                hidden_residual,
+                frames=frame_dict[0]
+            )
+        hidden_residual_1 = hidden_residual
+
         # aggregate input and hidden features
-        sse_com = get_com(
-            node_pos[node_to_sse_mapping.indices()[0]],
-            node_to_sse_mapping.indices()[1],
-            node_to_sse_mapping.size()[1]
-        )
-        pr_com = get_com(
-            node_pos,
-            node_to_pr_mapping.indices()[1],
-            node_to_pr_mapping.size()[1]
-        )
+        sse_com = ccc.get_com(2)
+        pr_com = ccc.get_com(3)
         node_rep_agg = self.attentive_node2sse(
-            from_rank_sv=node_rep,
-            to_rank_sv=sse_rep,
+            from_rank_sv=hidden_residual_1,
+            to_rank_sv=sse_hidden_residual,
             incidence_matrix=node_to_sse_mapping,
             from_frame=frame_dict[0],
             to_frame=frame_dict[2],
@@ -326,22 +377,22 @@ class TCPInteractions(GCPInteractions):
         )
         pr_rep_to_sse = self.attentive_pr2sse(
             from_rank_sv=pr_rep,
-            to_rank_sv=sse_rep,
+            to_rank_sv=sse_hidden_residual,
             incidence_matrix=pr_to_sse_mapping,
             from_frame=frame_dict[3],
             to_frame=frame_dict[2],
             from_pos=pr_com[pr_to_sse_mapping.indices()[0]],
             to_pos=sse_com,
         )
-        cell_hidden_residual = ScalarVector(*hidden_residual_cell.concat((sse_rep, node_rep_agg, pr_rep_to_sse)))  # c_i || h_i || e_i || m_e
+        sse_hidden_residual = ScalarVector(*sse_hidden_residual.concat((sse_rep, node_rep_agg, pr_rep_to_sse)))  # c_i || h_i || e_i || m_e
         # propagate with sse feedforward layers
         for module in self.sse_ff_network:
-            cell_hidden_residual = module(
-                cell_hidden_residual,
+            sse_hidden_residual = module(
+                sse_hidden_residual,
                 frames=frame_dict[2],
             )
         sse_rep_to_node = self.attentive_sse2node(
-            from_rank_sv=cell_hidden_residual,
+            from_rank_sv=sse_hidden_residual,
             to_rank_sv=node_rep,
             incidence_matrix=sse_to_node_mapping,
             from_frame=frame_dict[2],
@@ -351,17 +402,19 @@ class TCPInteractions(GCPInteractions):
         )
         sse_rep_to_node = ScalarVector(*[lift_features_with_padding(res, neighborhood=node_to_sse_mapping) for res in sse_rep_to_node.vs()])
 
-        hidden_residual = ScalarVector(*hidden_residual.concat((node_rep, sse_rep_to_node)))  # h_i || m_e || m_c
+        hidden_residual_2 = ScalarVector(*hidden_residual_1.concat((sse_rep_to_node, )))  # h_i || m_e || m_c
         # propagate with feedforward layers
-        for module in self.feedforward_network:
-            hidden_residual = module(
-                hidden_residual,
+        for module in self.feedforward_network_2:
+            hidden_residual_2 = module(
+                hidden_residual_2,
                 frames=frame_dict[0]
             )
 
+
+
         if self.pr_update:
             node_rep_to_pr = self.attentive_node2pr(
-                from_rank_sv=node_rep,
+                from_rank_sv=hidden_residual_2,
                 to_rank_sv=pr_rep,
                 incidence_matrix=node_to_pr_mapping,
                 from_frame=frame_dict[0],
@@ -371,7 +424,7 @@ class TCPInteractions(GCPInteractions):
             )
 
             sse_rep_to_pr = self.attentive_sse2pr(
-                from_rank_sv=sse_rep,
+                from_rank_sv=sse_hidden_residual,
                 to_rank_sv=pr_rep,
                 incidence_matrix=sse_to_pr_mapping,
                 from_frame=frame_dict[2],
@@ -388,8 +441,8 @@ class TCPInteractions(GCPInteractions):
                 )
 
         # apply GCP dropout
-        node_rep = node_rep + self.gcp_dropout["0"](hidden_residual)
-        sse_rep = sse_rep + self.gcp_dropout["2"](cell_hidden_residual) if self.sse_update else sse_rep
+        node_rep = node_rep + self.gcp_dropout["0"](hidden_residual_2)
+        sse_rep = sse_rep + self.gcp_dropout["2"](sse_hidden_residual) if self.sse_update else sse_rep
         pr_rep = pr_rep + self.gcp_dropout["3"](pr_hidden_residual) if self.pr_update else pr_rep
 
         # apply GCP normalization (2)

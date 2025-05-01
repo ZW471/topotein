@@ -7,6 +7,7 @@ from topotein.features.topotein_complex import TopoteinComplex
 def compute_neighborhoods(batch, neighborhoods):
     if isinstance(batch.sse_cell_complex, TopoteinComplex):
         nc = TopoteinNeighborhoodCalculator(batch.sse_cell_complex)
+        batch.sse_cell_complex.calculator = nc
     else:
         nc = NeighborhoodCaculator(batch)
     return nc.calc_equations(neighborhoods)

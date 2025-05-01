@@ -228,13 +228,14 @@ class TCPNetModel(GCPNetModel):
                 edge_index=batch.edge_index,
                 node_mask = node_mask,
                 node_pos=batch.pos,
+                ccc=batch.sse_cell_complex,
                 node_to_sse_mapping=batch.N0_2,
                 sse_to_node_mapping=batch.N2_0,
                 edge_to_sse_mapping=batch.N1_2,
                 pr_to_sse_mapping=batch.N3_2,
                 node_to_pr_mapping=batch.N0_3,
                 sse_to_pr_mapping=batch.N2_3,
-                # sse_to_edge_outer_mapping=batch.N2_1_outer,
+                sse_to_edge_outer_mapping=batch.N2_1_outer,
                 edge_to_sse_outer_mapping=batch.N1_2_outer
             )
             (h, chi), batch.pos = new_reps[0], new_reps[1]
