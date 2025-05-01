@@ -140,32 +140,28 @@ class TCPInteractions(GCPInteractions):
 
         self.sse_ff_network = nn.ModuleList(ff_interaction_layers)
 
-        self.attention_head_num = 8
+        self.attention_head_num = 4
         self.attention_hidden_dim = None
 
         self.attentive_node2sse = GeometryLocationAttention(
-            from_vec_dim=node_dims.vector,
-            to_vec_dim=sse_dims.vector,
+            from_sv_dim=node_dims,
+            to_sv_dim=sse_dims,
             num_heads=self.attention_head_num,
             hidden_dim=self.attention_hidden_dim,
             activation='silu',
             concat=True,
             higher_to_lower=False,
         )
-        self.W_d_node2sse_s = nn.Linear(node_dims.scalar * self.attention_head_num, node_dims.scalar, bias=False)
-        self.W_d_node2sse_v = nn.Linear(node_dims.vector * self.attention_head_num, node_dims.vector, bias=False)
 
         self.attentive_sse2node = GeometryLocationAttention(
-            from_vec_dim=sse_dims.vector,
-            to_vec_dim=node_dims.vector,
+            from_sv_dim=sse_dims,
+            to_sv_dim=node_dims,
             num_heads=self.attention_head_num,
             hidden_dim=5,
             activation='silu',
             concat=True,
             higher_to_lower=True,
         )
-        self.W_d_sse2node_s = nn.Linear(sse_dims.scalar * self.attention_head_num, sse_dims.scalar, bias=False)
-        self.W_d_sse2node_v = nn.Linear(sse_dims.vector * self.attention_head_num, sse_dims.vector, bias=False)
 
         # build out feedforward (FF) network modules for prs
         if self.pr_update:
@@ -212,40 +208,34 @@ class TCPInteractions(GCPInteractions):
             self.pr_ff_network = nn.ModuleList(ff_interaction_layers)
 
             self.attentive_node2pr = GeometryLocationAttention(
-                from_vec_dim=node_dims.vector,
-                to_vec_dim=pr_dims.vector,
+                from_sv_dim=node_dims,
+                to_sv_dim=pr_dims,
                 num_heads=self.attention_head_num,
                 hidden_dim=self.attention_hidden_dim,
                 activation='silu',
                 concat=True,
                 higher_to_lower=False,
             )
-            self.W_d_node2pr_s = nn.Linear(node_dims.scalar * self.attention_head_num, node_dims.scalar, bias=False)
-            self.W_d_node2pr_v = nn.Linear(node_dims.vector * self.attention_head_num, node_dims.vector, bias=False)
 
             self.attentive_sse2pr = GeometryLocationAttention(
-                from_vec_dim=sse_dims.vector,
-                to_vec_dim=pr_dims.vector,
+                from_sv_dim=sse_dims,
+                to_sv_dim=pr_dims,
                 num_heads=self.attention_head_num,
                 hidden_dim=self.attention_hidden_dim,
                 activation='silu',
                 concat=True,
                 higher_to_lower=False,
             )
-            self.W_d_sse2pr_s = nn.Linear(sse_dims.scalar * self.attention_head_num, sse_dims.scalar, bias=False)
-            self.W_d_sse2pr_v = nn.Linear(sse_dims.vector * self.attention_head_num, sse_dims.vector, bias=False)
 
         self.attentive_pr2sse = GeometryLocationAttention(
-            from_vec_dim=pr_dims.vector,
-            to_vec_dim=sse_dims.vector,
+            from_sv_dim=pr_dims,
+            to_sv_dim=sse_dims,
             num_heads=self.attention_head_num,
             hidden_dim=self.attention_hidden_dim,
             activation='silu',
             concat=True,
             higher_to_lower=True,
         )
-        self.W_d_pr2sse_s = nn.Linear(pr_dims.scalar * self.attention_head_num, pr_dims.scalar, bias=False)
-        self.W_d_pr2sse_v = nn.Linear(pr_dims.vector * self.attention_head_num, pr_dims.vector, bias=False)
 
     @jaxtyped(typechecker=typechecker)
     def forward(
@@ -315,13 +305,6 @@ class TCPInteractions(GCPInteractions):
         )
 
         # aggregate input and hidden features
-        # node_rep_agg = ScalarVector(*[torch_scatter.scatter(
-        #     rep[node_to_sse_mapping.indices()[0]],
-        #     node_to_sse_mapping.indices()[1],
-        #     dim=0,
-        #     dim_size=node_to_sse_mapping.shape[1],
-        #     reduce="mean",
-        # ) for rep in node_rep.vs()])
         sse_com = get_com(
             node_pos[node_to_sse_mapping.indices()[0]],
             node_to_sse_mapping.indices()[1],
@@ -332,7 +315,7 @@ class TCPInteractions(GCPInteractions):
             node_to_pr_mapping.indices()[1],
             node_to_pr_mapping.size()[1]
         )
-        node_rep_to_sse = self.attentive_node2sse(
+        node_rep_agg = self.attentive_node2sse(
             from_rank_sv=node_rep,
             to_rank_sv=sse_rep,
             incidence_matrix=node_to_sse_mapping,
@@ -340,12 +323,6 @@ class TCPInteractions(GCPInteractions):
             to_frame=frame_dict[2],
             from_pos=node_pos,
             to_pos=sse_com[node_to_sse_mapping.indices()[1]]
-        )
-        node_rep_agg = sv_aggregate(
-            sv_apply_proj(node_rep_to_sse, self.W_d_node2sse_s, self.W_d_node2sse_v),
-            node_to_sse_mapping,
-            reduce="sum",
-            indexed_input=True
         )
         pr_rep_to_sse = self.attentive_pr2sse(
             from_rank_sv=pr_rep,
@@ -356,7 +333,6 @@ class TCPInteractions(GCPInteractions):
             from_pos=pr_com[pr_to_sse_mapping.indices()[0]],
             to_pos=sse_com,
         )
-        pr_rep_to_sse = sv_apply_proj(pr_rep_to_sse, self.W_d_pr2sse_s, self.W_d_pr2sse_v)
         cell_hidden_residual = ScalarVector(*hidden_residual_cell.concat((sse_rep, node_rep_agg, pr_rep_to_sse)))  # c_i || h_i || e_i || m_e
         # propagate with sse feedforward layers
         for module in self.sse_ff_network:
@@ -373,7 +349,6 @@ class TCPInteractions(GCPInteractions):
             to_pos=node_pos,
             from_pos=sse_com[node_to_sse_mapping.indices()[1]]
         )
-        sse_rep_to_node = sv_apply_proj(sse_rep_to_node, self.W_d_sse2node_s, self.W_d_sse2node_v)
         sse_rep_to_node = ScalarVector(*[lift_features_with_padding(res, neighborhood=node_to_sse_mapping) for res in sse_rep_to_node.vs()])
 
         hidden_residual = ScalarVector(*hidden_residual.concat((node_rep, sse_rep_to_node)))  # h_i || m_e || m_c
@@ -394,8 +369,6 @@ class TCPInteractions(GCPInteractions):
                 from_pos=node_pos,
                 to_pos=pr_com[node_to_pr_mapping.indices()[1]]
             )
-            node_rep_to_pr = sv_apply_proj(node_rep_to_pr, self.W_d_node2pr_s, self.W_d_node2pr_v)
-            node_rep_to_pr = sv_aggregate(node_rep_to_pr, node_to_pr_mapping, reduce="sum", indexed_input=True)
 
             sse_rep_to_pr = self.attentive_sse2pr(
                 from_rank_sv=sse_rep,
@@ -406,8 +379,6 @@ class TCPInteractions(GCPInteractions):
                 from_pos=sse_com,
                 to_pos=pr_com[sse_to_pr_mapping.indices()[1]]
             )
-            sse_rep_to_pr = sv_apply_proj(sse_rep_to_pr, self.W_d_sse2pr_s, self.W_d_sse2pr_v)
-            sse_rep_to_pr = sv_aggregate(sse_rep_to_pr, sse_to_pr_mapping, reduce="sum", indexed_input=True)
 
             pr_hidden_residual = ScalarVector(*node_rep_to_pr.concat((pr_rep, sse_rep_to_pr)))
             for module in self.pr_ff_network:

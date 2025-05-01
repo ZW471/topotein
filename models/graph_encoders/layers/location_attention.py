@@ -3,12 +3,14 @@ Geometry Location Attention modules.
 
 This module provides implementations of geometry-aware location attention mechanisms.
 """
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from torch_scatter import scatter_sum, scatter_softmax
 from proteinworkshop.models.utils import get_activations
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
-from topotein.models.utils import get_com, sv_attention
+from topotein.models.utils import get_com, sv_attention, sv_apply_proj, sv_aggregate
 
 
 class GeometryLocationAttentionHead(nn.Module):
@@ -130,13 +132,14 @@ class GeometryLocationAttention(nn.Module):
 
     def __init__(
             self,
-            from_vec_dim: int,
-            to_vec_dim: int,
+            from_sv_dim: ScalarVector,
+            to_sv_dim: ScalarVector,
             num_heads: int = 4,
-            hidden_dim: int = 3,
+            hidden_dim: Optional[int] = 3,
             higher_to_lower: bool = True,
             activation: str = 'silu',
             concat: bool = True,
+            pool: str = 'sum',
     ):
         """
         Initialize the GeometryLocationAttention module.
@@ -152,18 +155,22 @@ class GeometryLocationAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.concat = concat
-
+        self.higher_to_lower = higher_to_lower
+        self.pool = pool
         # Create multiple attention heads
         self.heads = nn.ModuleList([
             GeometryLocationAttentionHead(
-                from_vec_dim=from_vec_dim,
-                to_vec_dim=to_vec_dim,
+                from_vec_dim=from_sv_dim.vector,
+                to_vec_dim=to_sv_dim.vector,
                 hidden_dim=hidden_dim,
                 activation=activation,
-                higher_to_lower=higher_to_lower,
+                higher_to_lower=self.higher_to_lower,
             )
             for _ in range(num_heads)
         ])
+        
+        self.W_s = nn.Linear(from_sv_dim.scalar * self.num_heads, from_sv_dim.scalar, bias=False)
+        self.W_v = nn.Linear(from_sv_dim.vector * self.num_heads, from_sv_dim.vector, bias=False)
 
     def forward(
             self,
@@ -218,7 +225,12 @@ class GeometryLocationAttention(nn.Module):
             # Average outputs
             att = torch.mean(torch.stack(head_outputs, dim=0), dim=0)
 
-        return sv_attention(
+        sv = sv_attention(
             sv = from_rank_sv.idx(incidence_matrix.indices()[0]),
             attention = att,
         )
+        
+        sv = sv_apply_proj(sv, self.W_s, self.W_v)
+        if not self.higher_to_lower:
+            sv = sv_aggregate(sv, incidence_matrix, reduce=self.pool, indexed_input=True)
+        return sv
