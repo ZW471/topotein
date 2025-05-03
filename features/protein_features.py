@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import jaxtyped
 from omegaconf import ListConfig
 from torch_geometric.data import Batch, Data
-from torch_scatter import scatter_mean, scatter_std
+from torch_scatter import scatter_mean, scatter_std, scatter_sum
 
 from topotein.features.utils import eigenval_features
 from topotein.models.utils import localize, get_com, scatter_eigen_decomp
@@ -71,22 +71,15 @@ def compute_scalar_protein_features(
                 dim_size=pr_dim_size
             ).to_dense()
             feats.append(sse_freq)
-        elif feature == "sse_size_mean":
-            sse_size = x.sse_cell_index_simple[1] - x.sse_cell_index_simple[0] + 1
-            sse_size_mean = torch_scatter.scatter_mean(
-                sse_size.float(),
-                x.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3).indices()[1],
-                dim_size=pr_dim_size
-            )
-            feats.append(sse_size_mean)
-        elif feature == "sse_size_std":
-            sse_size = x.sse_cell_index_simple[1] - x.sse_cell_index_simple[0] + 1
-            sse_size_std = torch_scatter.scatter_std(
-                sse_size.float(),
-                x.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3).indices()[1],
-                dim_size=pr_dim_size
-            )
-            feats.append(sse_size_std)
+        elif feature == "sse_size_mean_and_std":
+            sse_size: torch.Tensor = x.sse_cell_index_simple[1] - x.sse_cell_index_simple[0] + 1
+            sse_size = sse_size.unsqueeze(-1).repeat(1, 3) * x.sse
+            x.N2_3 = x.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
+            sse_size_sum = scatter_sum(sse_size, x.N2_3.indices()[1], dim=0, dim_size=x.N2_3.size(1))
+            sse_num_sum = scatter_sum(x.sse, x.N2_3.indices()[1], dim=0, dim_size=x.N2_3.size(1))
+            sse_size_mean = sse_size_sum / (sse_num_sum + 1e-8)
+            sse_size_std = ((sse_size_sum ** 2) / (sse_num_sum + 1e-8) - (sse_size_mean ** 2)).clamp(min=0).sqrt()
+            feats.extend([sse_size_mean, sse_size_std])
         elif feature == "gyration_r":
             com = x.sse_cell_complex.get_com(rank=3)
             d2 = ((x.pos - com[x.batch])**2).sum(dim=1)
