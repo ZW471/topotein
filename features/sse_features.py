@@ -126,13 +126,8 @@ def compute_vector_sse_features(
             for sse_vector in sse_vectors:
                 vector_sse_features.append(_normalize(sse_vector).unsqueeze(-2))
         elif feature == "eigenvectors":
-            pca_frame = get_pca_frames(
-                positions=x.pos_in_sse[x.N0_2.indices()[0]],
-                cluster_ids=x.N0_2.indices()[1],
-                cluster_num=x.N0_2.size()[1]
-            )
-            x.sse_pca_frames = pca_frame
-            vector_sse_features.append(pca_frame)
+            x.sse_pca_frames = localize(x, rank=2, frame_type='pca')
+            vector_sse_features.append(x.sse_pca_frames)
 
         elif feature == "consecutive_diff":
             if not hasattr(x, 'N2_3'):
@@ -388,6 +383,7 @@ def get_sse_eigen_features(batch):
     return eigenval, eigenvec
 
 
+
 @jaxtyped(typechecker=typechecker)
 def std_wrt_localized_frame(batch: ProteinBatch) -> torch.Tensor:
     sse_com = batch.sse_cell_complex.get_com(rank=2)
@@ -412,11 +408,7 @@ def vector_features(batch: ProteinBatch) -> list[torch.Tensor]:
     :return: A list of geometric vector features, where each feature is a tensor.
     """
 
-    device = batch.pos.device
-    node_idx_in_sse = torch.cat([torch.arange(s, e + 1, device=device) for s, e in batch.sse_cell_index_simple.T], dim=-1)
-    sse_batch = torch.cat([torch.ones(e - s + 1, device=device) * idx for idx, (s, e) in enumerate(batch.sse_cell_index_simple.T)], dim=-1).long()
-    batch['pos_in_sse'] = batch.pos[node_idx_in_sse]
-    com_pos, _ = centralize(batch, key='pos_in_sse', batch_index=sse_batch)
+    com_pos = batch.sse_cell_complex.get_com(2)
     X = batch.pos
 
     start_residue_idx = batch.sse_cell_index_simple[0, :]
@@ -424,7 +416,7 @@ def vector_features(batch: ProteinBatch) -> list[torch.Tensor]:
 
     start_residue_pos = X[start_residue_idx, :]
     end_residue_pos = X[end_residue_idx, :]
-    middle_pos = (start_residue_pos + end_residue_pos) / 2
+    # middle_pos = (start_residue_pos + end_residue_pos) / 2
 
     median_residue_idx = (start_residue_idx + end_residue_idx) / 2
     s_median_residue_idx = torch.ceil(median_residue_idx).long()
@@ -437,8 +429,8 @@ def vector_features(batch: ProteinBatch) -> list[torch.Tensor]:
     com_to_s_vec = start_residue_pos - com_pos
     com_to_e_vec = end_residue_pos - com_pos
     med_to_com_vec = com_pos - median_residue_pos
-    med_to_middle_vec = middle_pos - median_residue_pos
-    middle_to_com_vec = com_pos - middle_pos
+    # med_to_middle_vec = middle_pos - median_residue_pos
+    # middle_to_com_vec = com_pos - middle_pos
 
     features = [
         s_to_e_vec,
@@ -447,8 +439,8 @@ def vector_features(batch: ProteinBatch) -> list[torch.Tensor]:
         com_to_s_vec,
         com_to_e_vec,
         med_to_com_vec,
-        med_to_middle_vec,
-        middle_to_com_vec
+        # med_to_middle_vec,
+        # middle_to_com_vec
     ]
 
     return features

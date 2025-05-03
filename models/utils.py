@@ -236,7 +236,7 @@ def scatter_eigen_decomp(positions: torch.Tensor, cluster_ids: torch.Tensor, clu
     return U, centered, V
 
 
-def localize(batch, rank, node_mask=None, norm_pos_diff=True):
+def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="default"):
     num_of_frames = batch.sse_cell_complex._get_size_of_rank(rank)
     frames = (
             torch.ones((num_of_frames, 3, 3), device=batch.pos.device)
@@ -269,70 +269,77 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True):
             X_dst = batch.pos[batch.edge_index[0]]
             frames = get_frames(X_src, X_dst, normalize=norm_pos_diff)
     elif rank == 2:
-        if not hasattr(batch, 'N0_2'):
-            batch.N0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
-        if not hasattr(batch, 'N2_3'):
-            batch.N2_3 = batch.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
-        batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
+        if frame_type == "default":
+            if not hasattr(batch, 'N0_2'):
+                batch.N0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
+            if not hasattr(batch, 'N2_3'):
+                batch.N2_3 = batch.sse_cell_complex.incidence_matrix(from_rank=2, to_rank=3)
+            batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
 
-        if node_mask is not None:
-            # in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
-            # # Use PCA instead of COM for rank 2
-            # sse_frames = get_pca_frames(
-            #     positions=batch.pos_in_sse[in_sse_node_mask],
-            #     cluster_ids=batch.N0_2.indices()[1][in_sse_node_mask],
-            #     cluster_num=num_of_frames
-            # )
-            # sse_mask = torch.any(sse_frames != 0, dim=(1, 2))
-            # frames[sse_mask] = sse_frames[sse_mask]
+            if node_mask is not None:
 
-            pr_com_pre_centering = get_com(
-                positions=batch.pos[node_mask],
-                cluster_ids=batch.batch[node_mask],
-                cluster_num=len(batch.id)
-            )
+                pr_com_pre_centering = get_com(
+                    positions=batch.pos[node_mask],
+                    cluster_ids=batch.batch[node_mask],
+                    cluster_num=len(batch.id)
+                )
 
-            batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
+                batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
 
-            sse_com = get_com(
-                positions=batch.pos[batch.N0_2.indices()[0]][node_mask],
-                cluster_ids=batch.N0_2.indices()[1][node_mask],
-                cluster_num=batch.N0_2.size()[1]
-            )
+                sse_com = get_com(
+                    positions=batch.pos[batch.N0_2.indices()[0]][node_mask],
+                    cluster_ids=batch.N0_2.indices()[1][node_mask],
+                    cluster_num=batch.N0_2.size()[1]
+                )
 
-            farest_idx = scatter_max((batch.pos[node_mask] ** 2).sum(dim=-1), batch.batch)[1]
-            pr_farest = batch.pos[node_mask][farest_idx]
+                farest_idx = scatter_max((batch.pos[node_mask] ** 2).sum(dim=-1), batch.batch)[1]
+                pr_farest = batch.pos[node_mask][farest_idx]
 
-        else:
-            # Use PCA instead of COM for rank 2
-            # frames = get_pca_frames(
-            #     positions=batch.pos_in_sse,
-            #     cluster_ids=batch.N0_2.indices()[1],
-            #     cluster_num=num_of_frames
-            # )
-            pr_com_pre_centering = get_com(
-                positions=batch.pos,
-                cluster_ids=batch.batch,
-                cluster_num=len(batch.id)
-            )
+            else:
+                pr_com_pre_centering = get_com(
+                    positions=batch.pos,
+                    cluster_ids=batch.batch,
+                    cluster_num=len(batch.id)
+                )
 
-            batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
+                batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
 
-            sse_com = get_com(
-                positions=batch.pos[batch.N0_2.indices()[0]],
-                cluster_ids=batch.N0_2.indices()[1],
-                cluster_num=batch.N0_2.size()[1]
-            )
+                sse_com = get_com(
+                    positions=batch.pos[batch.N0_2.indices()[0]],
+                    cluster_ids=batch.N0_2.indices()[1],
+                    cluster_num=batch.N0_2.size()[1]
+                )
 
-            farest_idx = scatter_max((batch.pos ** 2).sum(dim=-1), batch.batch)[1]
-            pr_farest = batch.pos[farest_idx]
+                farest_idx = scatter_max((batch.pos ** 2).sum(dim=-1), batch.batch)[1]
+                pr_farest = batch.pos[farest_idx]
 
-        norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1e-8)
-        a_vec = norm(-sse_com)
-        b_vec = norm(torch.cross(-sse_com, pr_farest[batch.N2_3.indices()[1]], dim=-1))
-        c_vec = norm(torch.cross(b_vec, a_vec, dim=-1))
+            norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1e-8)
+            a_vec = norm(-sse_com)
+            b_vec = norm(torch.cross(-sse_com, pr_farest[batch.N2_3.indices()[1]], dim=-1))
+            c_vec = norm(torch.cross(b_vec, a_vec, dim=-1))
 
-        frames = torch.stack([a_vec, b_vec, c_vec], dim=-1)
+            frames = torch.stack([a_vec, b_vec, c_vec], dim=-1)
+        elif frame_type == "pca":
+            if not hasattr(batch, 'N0_2'):
+                batch.N0_2 = batch.sse_cell_complex.incidence_matrix(from_rank=0, to_rank=2)
+            batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
+
+            if node_mask is not None:
+                in_sse_node_mask = node_mask[batch.N0_2.indices()[0]]
+                # Use PCA instead of COM for rank 2
+                sse_frames = get_pca_frames(
+                    positions=batch.pos_in_sse[in_sse_node_mask],
+                    cluster_ids=batch.N0_2.indices()[1][in_sse_node_mask],
+                    cluster_num=num_of_frames
+                )
+                sse_mask = torch.any(sse_frames != 0, dim=(1, 2))
+                frames[sse_mask] = sse_frames[sse_mask]
+            else:
+                frames = get_pca_frames(
+                    positions=batch.pos_in_sse,
+                    cluster_ids=batch.N0_2.indices()[1],
+                    cluster_num=num_of_frames
+                )
     elif rank == 3:
         if node_mask is not None:
             # Use PCA instead of COM for rank 3
