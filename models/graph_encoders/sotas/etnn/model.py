@@ -1,9 +1,12 @@
+from typing import Any
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch_geometric.data import Data
 from torch_geometric.nn import global_add_pool
 
+from proteinworkshop.types import EncoderOutput
 from topotein.models.graph_encoders.sotas.etnn.layers import ETNNLayer
 from topotein.models.graph_encoders.sotas.etnn import utils, invariants
 
@@ -132,7 +135,7 @@ class ETNNCore(nn.Module):
                 nn.Linear(num_hidden, num_out),
             )
 
-    def forward(self, graph: Data) -> Tensor:
+    def forward(self, graph: Data) -> dict[str, Tensor | None | Any]:
         device = graph.pos.device
 
         cell_ind = {
@@ -176,6 +179,7 @@ class ETNNCore(nn.Module):
             '0': graph.x,
             '1': graph.edge_attr,
             '2': graph.sse_attr,
+            "3": graph.pr_attr
         }
 
         # if using sparse invariant computation, obtain indces
@@ -237,13 +241,13 @@ class ETNNCore(nn.Module):
             out = self.post_pool(state)
             out = torch.squeeze(out, -1)
 
-        return {
+        return EncoderOutput({
             "node_embedding": out['0'],
             "edge_embedding": out['1'],
             "sse_embedding": out['2'],
-            "graph_embedding": None,
+            "graph_embedding": out['3'],
             "pos": pos
-        }
+        })
 
     def __str__(self):
         return f"ETNN ({self.type})"
