@@ -71,8 +71,9 @@ class TopoteinNetModel(nn.Module):
         # interactions layers
 
         self.interaction_layers = nn.ModuleList(
-            TPPInteraction(
-                dim_dict=self.out_dims_dict
+            TopoteinInteraction(
+                in_dim_dict=self.out_dims_dict,
+                out_dim_dict=self.out_dims_dict,
             )
             for _ in range(model_cfg.num_layers)
         )
@@ -98,11 +99,9 @@ class TopoteinNetModel(nn.Module):
         X_dict = self.embed(batch)
         batch['embeddings'] = {k: v for k, v in X_dict.items()}
         for layer in self.interaction_layers:
-            X_dict = layer(X_dict, neighbor_dict={
-                "N0_0_via_1": batch.N0_0_via_1,
-            }, frame_dict=batch.frame_dict)
-        for key in X_dict:
-            batch.embeddings[key] = X_dict[key]
+            X_dict = layer(batch)
+            for key in X_dict:
+                batch.embeddings[key] = X_dict[key]
 
         h_out = self.invariant_node_projection[0](batch.embeddings[0])
         h_out, _ = self.invariant_node_projection[1](h_out, batch.frame_dict[0])
