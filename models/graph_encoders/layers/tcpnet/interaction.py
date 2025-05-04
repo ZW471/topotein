@@ -105,6 +105,10 @@ class TCPInteractions(GCPInteractions):
 
         self.feedforward_network = nn.ModuleList(ff_interaction_layers)
 
+        self.aa_ff_norm = GCPLayerNorm(ScalarVector(
+            node_dims.scalar + sse_dims.scalar,
+            node_dims.vector + sse_dims.vector,
+            ), use_gcp_norm=layer_cfg.use_gcp_norm)
         ff_interaction_layers_2 = [
             ff_TCP(
                 (
@@ -149,6 +153,10 @@ class TCPInteractions(GCPInteractions):
             if layer_cfg.num_feedforward_layers == 1
             else (4 * sse_dims.scalar, 2 * sse_dims.vector)
         )
+        self.sse_ff_norm = GCPLayerNorm(ScalarVector(
+            sse_dims.scalar * 2 + node_dims.scalar + pr_dims.scalar,
+            sse_dims.vector * 2 + node_dims.vector + pr_dims.vector
+        ), use_gcp_norm=layer_cfg.use_gcp_norm)
         ff_interaction_layers = [
             ff_TCP(
                 (
@@ -188,6 +196,7 @@ class TCPInteractions(GCPInteractions):
 
         self.attention_head_num = 4
         self.attention_hidden_dim = None
+        self.disable_attention = getattr(cfg, "disable_attention", False)
 
         self.attentive_node2sse = GeometryLocationAttention(
             from_sv_dim=node_dims,
@@ -197,6 +206,7 @@ class TCPInteractions(GCPInteractions):
             activation='silu',
             concat=True,
             higher_to_lower=False,
+            disable_attention=self.disable_attention,
         )
 
         self.attentive_sse2node = GeometryLocationAttention(
@@ -207,6 +217,7 @@ class TCPInteractions(GCPInteractions):
             activation='silu',
             concat=True,
             higher_to_lower=True,
+            disable_attention=self.disable_attention,
         )
 
         # build out feedforward (FF) network modules for prs
@@ -216,6 +227,10 @@ class TCPInteractions(GCPInteractions):
                 if layer_cfg.num_feedforward_layers == 1
                 else (4 * pr_dims.scalar, 2 * pr_dims.vector)
             )
+            self.pr_ff_norm = GCPLayerNorm(ScalarVector(
+                pr_dims.scalar + node_dims.scalar + sse_dims.scalar,
+                pr_dims.vector + node_dims.vector + sse_dims.vector
+            ), use_gcp_norm=layer_cfg.use_gcp_norm)
             ff_interaction_layers = [
                 ff_TCP(
                     (
@@ -261,6 +276,7 @@ class TCPInteractions(GCPInteractions):
                 activation='silu',
                 concat=True,
                 higher_to_lower=False,
+                disable_attention=self.disable_attention,
             )
 
             self.attentive_sse2pr = GeometryLocationAttention(
@@ -271,6 +287,7 @@ class TCPInteractions(GCPInteractions):
                 activation='silu',
                 concat=True,
                 higher_to_lower=False,
+                disable_attention=self.disable_attention,
             )
 
         self.attentive_pr2sse = GeometryLocationAttention(
@@ -281,6 +298,7 @@ class TCPInteractions(GCPInteractions):
             activation='silu',
             concat=True,
             higher_to_lower=True,
+            disable_attention=self.disable_attention,
         )
 
     @jaxtyped(typechecker=typechecker)
@@ -361,6 +379,8 @@ class TCPInteractions(GCPInteractions):
                 hidden_residual,
                 frames=frame_dict[0]
             )
+
+        # return hidden_residual, node_pos, sse_rep, pr_rep
         hidden_residual_1 = hidden_residual
 
         # aggregate input and hidden features
@@ -386,6 +406,7 @@ class TCPInteractions(GCPInteractions):
         )
         sse_hidden_residual = ScalarVector(*sse_hidden_residual.concat((sse_rep, node_rep_agg, pr_rep_to_sse)))  # c_i || h_i || e_i || m_e
         # propagate with sse feedforward layers
+        sse_hidden_residual = self.sse_ff_norm(sse_hidden_residual)
         for module in self.sse_ff_network:
             sse_hidden_residual = module(
                 sse_hidden_residual,
@@ -403,6 +424,7 @@ class TCPInteractions(GCPInteractions):
         sse_rep_to_node = ScalarVector(*[lift_features_with_padding(res, neighborhood=node_to_sse_mapping) for res in sse_rep_to_node.vs()])
 
         hidden_residual_2 = ScalarVector(*hidden_residual_1.concat((sse_rep_to_node, )))  # h_i || m_e || m_c
+        hidden_residual_2 = self.aa_ff_norm(hidden_residual_2)
         # propagate with feedforward layers
         for module in self.feedforward_network_2:
             hidden_residual_2 = module(
@@ -434,6 +456,7 @@ class TCPInteractions(GCPInteractions):
             )
 
             pr_hidden_residual = ScalarVector(*node_rep_to_pr.concat((pr_rep, sse_rep_to_pr)))
+            pr_hidden_residual = self.pr_ff_norm(pr_hidden_residual)
             for module in self.pr_ff_network:
                 pr_hidden_residual = module(
                     pr_hidden_residual,

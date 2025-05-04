@@ -151,6 +151,7 @@ class GeometryLocationAttention(nn.Module):
             activation: ActivationType = 'silu',
             concat: bool = True,
             pool: str = 'sum',
+            disable_attention: bool = False,
     ):
         """
         Initialize the GeometryLocationAttention module.
@@ -169,19 +170,22 @@ class GeometryLocationAttention(nn.Module):
         self.higher_to_lower = higher_to_lower
         self.pool = pool
         # Create multiple attention heads
-        self.heads = nn.ModuleList([
-            GeometryLocationAttentionHead(
-                from_sv_dim=from_sv_dim,
-                to_sv_dim=to_sv_dim,
-                hidden_dim=hidden_dim,
-                activation=activation,
-                higher_to_lower=self.higher_to_lower,
-            )
-            for _ in range(num_heads)
-        ])
-        
-        self.W_s = nn.Linear(from_sv_dim.scalar * self.num_heads, from_sv_dim.scalar, bias=False)
-        self.W_v = nn.Linear(from_sv_dim.vector * self.num_heads, from_sv_dim.vector, bias=False)
+        self.disable_attention = disable_attention
+
+        if not self.disable_attention:
+            self.heads = nn.ModuleList([
+                GeometryLocationAttentionHead(
+                    from_sv_dim=from_sv_dim,
+                    to_sv_dim=to_sv_dim,
+                    hidden_dim=hidden_dim,
+                    activation=activation,
+                    higher_to_lower=self.higher_to_lower,
+                )
+                for _ in range(num_heads)
+            ])
+
+            self.W_s = nn.Linear(from_sv_dim.scalar * self.num_heads, from_sv_dim.scalar, bias=False)
+            self.W_v = nn.Linear(from_sv_dim.vector * self.num_heads, from_sv_dim.vector, bias=False)
 
     def forward(
             self,
@@ -208,40 +212,44 @@ class GeometryLocationAttention(nn.Module):
         Returns:
             Attention weights for each edge in the incidence matrix
         """
-        # If frames are not provided, use identity matrices
-        if from_frame is None:
-            from_frame = torch.eye(3, device=from_rank_sv.scalar.device).unsqueeze(0).expand(from_rank_sv.scalar.shape[0], -1, -1)
-        if to_frame is None:
-            to_frame = torch.eye(3, device=to_rank_sv.scalar.device).unsqueeze(0).expand(to_rank_sv.scalar.shape[0], -1, -1)
+        if not self.disable_attention:
+            # If frames are not provided, use identity matrices
+            if from_frame is None:
+                from_frame = torch.eye(3, device=from_rank_sv.scalar.device).unsqueeze(0).expand(from_rank_sv.scalar.shape[0], -1, -1)
+            if to_frame is None:
+                to_frame = torch.eye(3, device=to_rank_sv.scalar.device).unsqueeze(0).expand(to_rank_sv.scalar.shape[0], -1, -1)
 
-        # Compute attention weights for each head
-        head_outputs = [
-            head(
-                from_rank_sv=from_rank_sv,
-                to_rank_sv=to_rank_sv,
-                incidence_matrix=incidence_matrix,
-                from_frame=from_frame,
-                to_frame=to_frame,
-                from_pos=from_pos,
-                to_pos=to_pos,
+            # Compute attention weights for each head
+            head_outputs = [
+                head(
+                    from_rank_sv=from_rank_sv,
+                    to_rank_sv=to_rank_sv,
+                    incidence_matrix=incidence_matrix,
+                    from_frame=from_frame,
+                    to_frame=to_frame,
+                    from_pos=from_pos,
+                    to_pos=to_pos,
+                )
+                for head in self.heads
+            ]
+
+            # Combine outputs from all heads
+            if self.concat:
+                # Concatenate outputs along a new dimension
+                att = torch.stack(head_outputs, dim=-1)
+            else:
+                # Average outputs
+                att = torch.mean(torch.stack(head_outputs, dim=0), dim=0)
+
+            sv = sv_attention(
+                sv = from_rank_sv.idx(incidence_matrix.indices()[0]),
+                attention = att,
             )
-            for head in self.heads
-        ]
 
-        # Combine outputs from all heads
-        if self.concat:
-            # Concatenate outputs along a new dimension
-            att = torch.stack(head_outputs, dim=-1)
+            sv = sv_apply_proj(sv, self.W_s, self.W_v)
         else:
-            # Average outputs
-            att = torch.mean(torch.stack(head_outputs, dim=0), dim=0)
+            sv = from_rank_sv.idx(incidence_matrix.indices()[0])
 
-        sv = sv_attention(
-            sv = from_rank_sv.idx(incidence_matrix.indices()[0]),
-            attention = att,
-        )
-        
-        sv = sv_apply_proj(sv, self.W_s, self.W_v)
         if not self.higher_to_lower:
             sv = sv_aggregate(sv, incidence_matrix, reduce=self.pool, indexed_input=True)
         return sv
