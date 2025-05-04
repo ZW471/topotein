@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch_scatter import scatter_sum, scatter_softmax
 from proteinworkshop.models.utils import get_activations
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
+from proteinworkshop.types import ActivationType
 from topotein.models.utils import get_com, sv_attention, sv_apply_proj, sv_aggregate
 
 
@@ -23,11 +24,12 @@ class GeometryLocationAttentionHead(nn.Module):
 
     def __init__(
             self,
-            from_vec_dim: int,
-            to_vec_dim: int,
-            hidden_dim: int = 3,
-            activation: str = 'silu',
+            from_sv_dim: ScalarVector,
+            to_sv_dim: ScalarVector,
+            hidden_dim: ScalarVector,
+            activation: ActivationType = 'silu',
             higher_to_lower: bool = True,
+            use_vector_features: bool = True,
     ):
         """
         Initialize the GeometryLocationAttentionHead.
@@ -39,19 +41,24 @@ class GeometryLocationAttentionHead(nn.Module):
             activation: Activation function to use (default: 'silu')
         """
         super().__init__()
-        self.from_vec_dim = from_vec_dim
-        self.to_vec_dim = to_vec_dim
+        self.from_dim = from_sv_dim
+        self.to_dim = from_sv_dim
+        self.use_vector_features = use_vector_features
         self.hidden_dim = hidden_dim
 
         # Linear projections for vector features
         if self.hidden_dim is not None:
-            self.from_proj = nn.Linear(from_vec_dim, hidden_dim, bias=False)
-            self.to_proj = nn.Linear(to_vec_dim, hidden_dim, bias=False)
-            self.attn_proj = nn.Linear(hidden_dim * 2 * 3 + 2 * 3, 1, bias=False)
+            self.from_proj_v = nn.Linear(self.from_dim.vector, hidden_dim.vector, bias=False)
+            self.to_proj_v = nn.Linear(self.to_dim.vector, hidden_dim.vector, bias=False)
+            self.from_proj_s = nn.Linear(self.from_dim.scalar, hidden_dim.scalar, bias=False)
+            self.to_proj_s = nn.Linear(self.to_dim.scalar, hidden_dim.scalar, bias=False)
+            self.attn_proj = nn.Linear(2 * (hidden_dim.scalar + hidden_dim.vector * 3 + 3), 1, bias=False)
         else:
-            self.from_proj = nn.Identity()
-            self.to_proj = nn.Identity()
-            self.attn_proj = nn.Linear((from_vec_dim + to_vec_dim) * 3 + 2 * 3, 1, bias=False)
+            self.from_proj_v = nn.Identity()
+            self.to_proj_v = nn.Identity()
+            self.from_proj_s = nn.Identity()
+            self.to_proj_s = nn.Identity()
+            self.attn_proj = nn.Linear((self.from_dim.scalar + self.to_dim.scalar) + (self.from_dim.vector + self.to_dim.vector) * 3 + 2 * 3, 1, bias=False)
         self.activation = get_activations(activation)
         self.higher_to_lower = higher_to_lower
 
@@ -84,14 +91,16 @@ class GeometryLocationAttentionHead(nn.Module):
         incidence_size = incidence_matrix.size()
 
         # Get vector features for the entities connected by the incidence matrix
-        from_v = from_rank_sv.idx(incidence_index[0]).vector
+        from_s, from_v = from_rank_sv.idx(incidence_index[0])
         from_frame_selected = from_frame[incidence_index[0]]
-        to_v = to_rank_sv.idx(incidence_index[1]).vector
+        to_s, to_v = to_rank_sv.idx(incidence_index[1])
         to_frame_selected = to_frame[incidence_index[1]]
 
         # Project vector features
-        from_v_trans = self.from_proj(from_v.transpose(-1, -2))
-        to_v_trans = self.to_proj(to_v.transpose(-1, -2))
+        from_s = self.from_proj_s(from_s)
+        to_s = self.to_proj_s(to_s)
+        from_v_trans = self.from_proj_v(from_v.transpose(-1, -2))
+        to_v_trans = self.to_proj_v(to_v.transpose(-1, -2))
 
         # Compute position difference if positions are provided
         if from_pos is not None and to_pos is not None:
@@ -112,12 +121,14 @@ class GeometryLocationAttentionHead(nn.Module):
         to_v_scalarized = torch.bmm(to_v, to_frame_selected).reshape(to_v.shape[0], -1)
 
         # Concatenate transformed vectors
-        v_scalarized = torch.concat([from_v_scalarized, to_v_scalarized], dim=1)
+        sv_merged = torch.concat([from_s, to_s, from_v_scalarized, to_v_scalarized], dim=1)
 
         # Compute attention weights
-        raw = self.attn_proj(self.activation(v_scalarized)).squeeze(-1)
+        raw = self.attn_proj(self.activation(sv_merged)).squeeze(-1)
         att = scatter_softmax(raw, incidence_index[0 if self.higher_to_lower else 1], dim=0, dim_size=incidence_size[1])
         att = att.unsqueeze(-1)
+
+
 
         return att
 
@@ -135,9 +146,9 @@ class GeometryLocationAttention(nn.Module):
             from_sv_dim: ScalarVector,
             to_sv_dim: ScalarVector,
             num_heads: int = 4,
-            hidden_dim: Optional[int] = 3,
+            hidden_dim: Optional[ScalarVector] = None,
             higher_to_lower: bool = True,
-            activation: str = 'silu',
+            activation: ActivationType = 'silu',
             concat: bool = True,
             pool: str = 'sum',
     ):
@@ -160,8 +171,8 @@ class GeometryLocationAttention(nn.Module):
         # Create multiple attention heads
         self.heads = nn.ModuleList([
             GeometryLocationAttentionHead(
-                from_vec_dim=from_sv_dim.vector,
-                to_vec_dim=to_sv_dim.vector,
+                from_sv_dim=from_sv_dim,
+                to_sv_dim=to_sv_dim,
                 hidden_dim=hidden_dim,
                 activation=activation,
                 higher_to_lower=self.higher_to_lower,

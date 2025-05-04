@@ -187,7 +187,7 @@ class TCPInteractions(GCPInteractions):
         self.sse_ff_network = nn.ModuleList(ff_interaction_layers)
 
         self.attention_head_num = 4
-        self.attention_hidden_dim = 4
+        self.attention_hidden_dim = None
 
         self.attentive_node2sse = GeometryLocationAttention(
             from_sv_dim=node_dims,
@@ -203,7 +203,7 @@ class TCPInteractions(GCPInteractions):
             from_sv_dim=sse_dims,
             to_sv_dim=node_dims,
             num_heads=self.attention_head_num,
-            hidden_dim=5,
+            hidden_dim=self.attention_hidden_dim,
             activation='silu',
             concat=True,
             higher_to_lower=True,
@@ -414,7 +414,7 @@ class TCPInteractions(GCPInteractions):
 
         if self.pr_update:
             node_rep_to_pr = self.attentive_node2pr(
-                from_rank_sv=hidden_residual_2,
+                from_rank_sv=hidden_residual_1,
                 to_rank_sv=pr_rep,
                 incidence_matrix=node_to_pr_mapping,
                 from_frame=frame_dict[0],
