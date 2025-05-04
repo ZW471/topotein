@@ -43,7 +43,7 @@ class ETNNModel(torch.nn.Module):
                 setattr(self, k, v)
 
 
-        self.layers = torch.nn.ModuleList([ETNNLayer(self.emb_dim, self.in_dim1, self.in_dim2, self.in_dim3, self.dropout, self.activation, **kwargs) for _ in range(self.num_layers)])
+        self.layers = torch.nn.ModuleList([ETNNLayer(self.emb_dim, self.in_dim1, self.in_dim2, self.dropout, self.activation, **kwargs) for _ in range(self.num_layers)])
         self.emb_0 = torch.nn.Linear(self.in_dim0, self.emb_dim)
         self.pool = get_aggregation(self.pool)
 
@@ -52,7 +52,6 @@ class ETNNModel(torch.nn.Module):
         H0 = self.emb_0(batch.x)
         H1 = batch.edge_attr
         H2 = batch.sse_attr
-        H3 = batch.pr_attr
 
         device = X.device
 
@@ -71,19 +70,16 @@ class ETNNModel(torch.nn.Module):
             N0_0_via_1 = from_sparse(cc.adjacency_matrix(rank=0, signed=False)).to(device)
             N0_0_via_2 = torch.sparse.mm(N2_0.T, N2_0).coalesce()
         else:
-            N3_0 = batch.N3_0
             N2_0 = batch.N2_0
             N1_0 = batch.N1_0
-
             N0_0_via_1 = batch.N0_0_via_1
             N0_0_via_2 = batch.N0_0_via_2
-            N0_0_via_3 = batch.N0_0_via_3
 
 
 
 
         for layer in self.layers:
-            H0, X = layer(X, H0, H1, H2, H3, N0_0_via_1, N0_0_via_2, N0_0_via_3, N3_0, N2_0, N1_0)
+            H0, X = layer(X, H0, H1, H2, N0_0_via_1, N0_0_via_2, N2_0, N1_0)
         return {
             "node_embedding": H0,
             # "edge_embedding": torch.cat([H1, H1], dim=-1),
