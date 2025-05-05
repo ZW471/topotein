@@ -174,11 +174,10 @@ if __name__ == "__main__":
         / "ca_bb_sse.yaml"
     )
     cfg['vector_node_features'] += ['orientation']
-    # cfg['scalar_edge_features'] += ['rbf']
+    cfg['scalar_edge_features'] += ['rbf']
     cfg['vector_edge_features'] += ["edge_vectors"]
-    # cfg['scalar_sse_features'] += ["sse_vector_norms", "sse_variance_wrt_localized_frame"]
-    cfg['vector_sse_features'] += ["sse_vectors"]
-    cfg['directed_edges'] = True
+    cfg['vector_sse_features'] += ["sse_vectors", "consecutive_diff", "pr_com_diff"]
+    cfg['vector_pr_features'] += ["farest_nodes", "nearest_nodes"]
     cfg['neighborhoods'] = ['N0_2 = B0_2']
     # cfg['pure_torch'] = True
     featuriser = hydra.utils.instantiate(cfg)

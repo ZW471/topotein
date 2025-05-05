@@ -126,6 +126,7 @@ def compute_vector_sse_features(
             for sse_vector in sse_vectors:
                 vector_sse_features.append(_normalize(sse_vector).unsqueeze(-2))
         elif feature == "eigenvectors":
+            # not stable - dont use!
             x.sse_pca_frames = localize(x, rank=2, frame_type='pca')
             vector_sse_features.append(x.sse_pca_frames)
 
