@@ -236,7 +236,7 @@ def scatter_eigen_decomp(positions: torch.Tensor, cluster_ids: torch.Tensor, clu
     return U, centered, V
 
 
-def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="default"):
+def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="default", eps=1e-8):
     num_of_frames = batch.sse_cell_complex._get_size_of_rank(rank)
     frames = (
             torch.ones((num_of_frames, 3, 3), device=batch.pos.device)
@@ -250,24 +250,24 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="defaul
                 cluster_ids=batch.edge_index[1][dst_node_mask],
                 cluster_num=num_of_frames
             )
-            frames[node_mask] = get_frames(X_src=batch.pos[node_mask], X_dst=neighbor_com[node_mask], normalize=norm_pos_diff)
+            frames[node_mask] = get_frames(X_src=batch.pos[node_mask], X_dst=neighbor_com[node_mask], normalize=norm_pos_diff, eps=eps)
         else:
             neighbor_com = get_com(
                 positions=batch.pos[batch.edge_index[0]],
                 cluster_ids=batch.edge_index[1],
                 cluster_num=num_of_frames
             )
-            frames = get_frames(X_src=batch.pos, X_dst=neighbor_com, normalize=norm_pos_diff)
+            frames = get_frames(X_src=batch.pos, X_dst=neighbor_com, normalize=norm_pos_diff, eps=eps)
     elif rank == 1:
         if node_mask is not None:
             edge_mask = node_mask[batch.edge_index[0]] & node_mask[batch.edge_index[1]]
             X_src = batch.pos[batch.edge_index[1]][edge_mask]
             X_dst = batch.pos[batch.edge_index[0]][edge_mask]
-            frames[edge_mask] = get_frames(X_src, X_dst, normalize=norm_pos_diff)
+            frames[edge_mask] = get_frames(X_src, X_dst, normalize=norm_pos_diff, eps=eps)
         else:
             X_src = batch.pos[batch.edge_index[1]]
             X_dst = batch.pos[batch.edge_index[0]]
-            frames = get_frames(X_src, X_dst, normalize=norm_pos_diff)
+            frames = get_frames(X_src, X_dst, normalize=norm_pos_diff, eps=eps)
     elif rank == 2:
         if frame_type == "default":
             if not hasattr(batch, 'N0_2'):
@@ -360,12 +360,12 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="defaul
 
     return frames
 
-def get_frames(X_src, X_dst, normalize=True):
+def get_frames(X_src, X_dst, normalize=True, eps=1e-8):
     # note that when X_src and X_dst is too close to each other, the frame is not accurate, same applies when X is [0, 0, 0]
-    norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + 1e-8) if normalize else x
+    norm = lambda x: x / (safe_norm(x, dim=1, keepdim=True) + eps) if normalize else x
 
-    a_vec = norm(X_src - X_dst)
-    b_vec = norm(torch.cross(X_src, X_dst))
+    a_vec = norm(X_dst - X_src)
+    b_vec = norm(torch.cross(X_dst, X_src))
     c_vec = torch.cross(a_vec, b_vec)
 
     return torch.stack([a_vec, b_vec, c_vec], dim=-1)

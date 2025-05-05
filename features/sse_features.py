@@ -137,12 +137,8 @@ def compute_vector_sse_features(
                 x.N2_3.indices()[1]
             ))
         elif feature == "pr_com_diff":
-            pr_com = x.sse_cell_complex.get_com(3)[x.N2_3.indices()[1]]
-            sse_com = x.sse_cell_complex.get_com(2)
-            start_pos, end_pos = x.pos[x.sse_cell_index_simple[0]], x.pos[x.sse_cell_index_simple[1]]
-            start_diff = start_pos - pr_com
-            end_diff = end_pos - pr_com
-            com_diff = sse_com - pr_com
+            start_diff, end_diff = x.sse_cell_complex.centered_pos[x.sse_cell_index_simple[0]], x.sse_cell_complex.centered_pos[x.sse_cell_index_simple[1]]
+            com_diff = x.sse_cell_complex.get_com(2)
             vector_sse_features.append(torch.stack([start_diff, com_diff, end_diff], dim=1))
         else:
             raise ValueError(f"Vector feature {feature} not recognised.")
@@ -386,7 +382,7 @@ def get_sse_eigen_features(batch):
 
 @jaxtyped(typechecker=typechecker)
 def std_wrt_localized_frame(batch: ProteinBatch) -> torch.Tensor:
-    sse_com = batch.sse_cell_complex.get_com(rank=2)
+    sse_com = batch.sse_cell_complex.get_com(rank=2, relative=False)
     projected_pos = torch.bmm((batch.pos[batch.N0_2.indices()[0]] - sse_com[batch.N0_2.indices()[1]]).unsqueeze(1), localize(batch, rank=2)[batch.N0_2.indices()[1]]).squeeze(1)
     return scatter_std(projected_pos, batch.N0_2.indices()[1].repeat(3, 1).T, dim=0)
 
@@ -409,7 +405,7 @@ def vector_features(batch: ProteinBatch) -> list[torch.Tensor]:
     """
 
     com_pos = batch.sse_cell_complex.get_com(2)
-    X = batch.pos
+    X = batch.sse_cell_complex.centered_pos
 
     start_residue_idx = batch.sse_cell_index_simple[0, :]
     end_residue_idx = batch.sse_cell_index_simple[1, :]

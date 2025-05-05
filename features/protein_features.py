@@ -81,8 +81,7 @@ def compute_scalar_protein_features(
             sse_size_std = ((sse_size_sum ** 2) / (sse_num_sum + 1e-8) - (sse_size_mean ** 2)).clamp(min=0).sqrt()
             feats.extend([sse_size_mean, sse_size_std])
         elif feature == "gyration_r":
-            com = x.sse_cell_complex.get_com(rank=3)
-            d2 = ((x.pos - com[x.batch])**2).sum(dim=1)
+            d2 = (x.sse_cell_complex.centered_pos**2).sum(dim=1)
             d_mean = torch_scatter.scatter_mean(
                 d2,
                 x.batch,
@@ -252,5 +251,4 @@ def get_protein_eigen_features(batch):
     return eigenval, eigenvec
 
 def project_node_positions(batch):
-    pr_com = batch.sse_cell_complex.get_com(rank=3)
-    return torch.bmm((batch.pos - pr_com[batch.batch]).unsqueeze(1), localize(batch, rank=3)[batch.batch]).squeeze(1)
+    return torch.bmm(batch.sse_cell_complex.centered_pos, localize(batch, rank=3)[batch.batch]).squeeze(1)

@@ -135,11 +135,26 @@ class TopoteinComplex:
         self.com_dict = {}
 
         self.calculator = None
+        self._centered_pos = None
 
-    def get_com(self, rank):
-        com = None
+    @property
+    def centered_pos(self):
+        pos = None
         if self.use_cache:
-            com = self.com_dict.get(rank, None)
+            pos = self._centered_pos
+
+        if pos is None:
+            pos = self.node_pos - self.get_com(rank=3, relative=False)
+            if self.use_cache:
+                self._centered_pos = pos
+
+        return pos
+
+    def get_com(self, rank, relative: bool = True):
+        com = None
+        dict_name = f"{rank}_{'rel' if relative else 'abs'}"
+        if self.use_cache:
+            com = self.com_dict.get(dict_name, None)
         if com is None:
             if rank == 0:
                 com = self.node_pos
@@ -158,7 +173,18 @@ class TopoteinComplex:
                 raise ValueError(f'Invalid rank: {rank}')
 
             if self.use_cache:
-                self.com_dict[rank] = com
+                self.com_dict[f"{rank}_abs"] = com
+
+            if relative:
+                if rank < 3:
+                    com = com - self.get_com(rank=3, relative=False)[
+                        self.incidence_matrix(from_rank=rank, to_rank=3).indices()[1]
+                    ]
+                else:
+                    com = torch.zeros_like(com, device=self.device)
+
+                if self.use_cache:
+                    self.com_dict[dict_name] = com
         return com
 
     def set_proteins(self, num_proteins, protein_batch):
