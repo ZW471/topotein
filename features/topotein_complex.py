@@ -125,7 +125,7 @@ class TopoteinComplex:
 
         self.nodes = torch.arange(num_nodes, device=self.device)
         self.edge_index = edge_index
-        self.cell_index = sse_index
+        self.sse_index = sse_index
         self.protein_batch = protein_batch
 
         self.use_cache = use_cache
@@ -144,7 +144,7 @@ class TopoteinComplex:
             pos = self._centered_pos
 
         if pos is None:
-            pos = self.node_pos - self.get_com(rank=3, relative=False)
+            pos = self.node_pos - self.get_com(rank=3, relative=False)[self.incidence_matrix(from_rank=0, to_rank=3).indices()[1]]
             if self.use_cache:
                 self._centered_pos = pos
 
@@ -283,8 +283,8 @@ class TopoteinComplex:
                 row = torch.arange(self.num_edges, device=self.device)
         elif to_rank == 2:
             if from_rank == 0:
-                cell_starts = self.cell_index[0, :]  # shape: [b]
-                cell_ends = self.cell_index[1, :]  # shape: [b]
+                cell_starts = self.sse_index[0, :]  # shape: [b]
+                cell_ends = self.sse_index[1, :]  # shape: [b]
                 lengths = cell_ends - cell_starts + 1  # shape: [b]
 
                 # Compute cumulative lengths to know the starting index for each cell in the concatenated vector.
@@ -305,10 +305,10 @@ class TopoteinComplex:
                 col = cell_starts[cell_ids] + relative_offsets
 
                 # The row indices correspond to the cell id repeated by its length.
-                row = torch.repeat_interleave(torch.arange(self.cell_index.shape[1], device=self.device), lengths)
+                row = torch.repeat_interleave(torch.arange(self.sse_index.shape[1], device=self.device), lengths)
 
             if from_rank == 1:
-                indices = map_edges_to_cells_searchsorted(self.edge_index, self.cell_index)
+                indices = map_edges_to_cells_searchsorted(self.edge_index, self.sse_index)
                 row, col = indices[1], indices[0]
         elif to_rank == 3:
             if from_rank == 0:
@@ -319,7 +319,7 @@ class TopoteinComplex:
                 row = self.protein_batch[self.edge_index[0]]
             elif from_rank == 2:
                 col = torch.arange(self.num_sses, device=self.device)
-                row = self.protein_batch[self.cell_index[0]]
+                row = self.protein_batch[self.sse_index[0]]
 
         result = torch.sparse_coo_tensor(
             indices=torch.stack([col, row], dim=0),

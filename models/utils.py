@@ -237,6 +237,7 @@ def scatter_eigen_decomp(positions: torch.Tensor, cluster_ids: torch.Tensor, clu
 
 
 def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="default", eps=1e-8):
+    # batch.pos = batch.sse_cell_complex.centered_pos
     num_of_frames = batch.sse_cell_complex._get_size_of_rank(rank)
     frames = (
             torch.ones((num_of_frames, 3, 3), device=batch.pos.device)
@@ -277,15 +278,6 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="defaul
             batch.pos_in_sse = batch.pos[batch.N0_2.indices()[0]]
 
             if node_mask is not None:
-
-                pr_com_pre_centering = get_com(
-                    positions=batch.pos[node_mask],
-                    cluster_ids=batch.batch[node_mask],
-                    cluster_num=len(batch.id)
-                )
-
-                batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
-
                 sse_com = get_com(
                     positions=batch.pos[batch.N0_2.indices()[0]][node_mask],
                     cluster_ids=batch.N0_2.indices()[1][node_mask],
@@ -296,14 +288,6 @@ def localize(batch, rank, node_mask=None, norm_pos_diff=True, frame_type="defaul
                 pr_farest = batch.pos[node_mask][farest_idx]
 
             else:
-                pr_com_pre_centering = get_com(
-                    positions=batch.pos,
-                    cluster_ids=batch.batch,
-                    cluster_num=len(batch.id)
-                )
-
-                batch.pos = batch.pos - pr_com_pre_centering[batch.batch]
-
                 sse_com = get_com(
                     positions=batch.pos[batch.N0_2.indices()[0]],
                     cluster_ids=batch.N0_2.indices()[1],
