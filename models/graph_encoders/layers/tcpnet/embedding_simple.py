@@ -88,11 +88,11 @@ class TCPEmbedding(GCPEmbedding):
 
         edge_rep = self.edge_embedding(
             edge_rep,
-            batch.frame_dict[1],
+            batch.frame_dict[1],  # TODO: node mask here
         )
         node_rep = self.node_embedding(
             node_rep,
-            batch.frame_dict[0],
+            batch.frame_dict[0],# TODO: node mask here
         )
 
         if not self.pre_norm:
