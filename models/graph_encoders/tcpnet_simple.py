@@ -85,6 +85,7 @@ class TCPNetModel(GCPNetModel):
         module_cfg = kwargs["module_cfg"]
         model_cfg = kwargs["model_cfg"]
         layer_cfg = kwargs["layer_cfg"]
+        self.use_original_gcp = module_cfg['use_original_gcp']
 
         self.predict_node_pos = module_cfg.predict_node_positions
         self.predict_node_rep = module_cfg.predict_node_rep
@@ -198,6 +199,7 @@ class TCPNetModel(GCPNetModel):
 
         # when updating node positions, decentralize updated positions to make their updates translation-equivariant
         if self.predict_node_pos:
+            raise RuntimeError("Do not predict node positions in TCPNetSimple. Use TCPNet instead. TCPNetSimple is for testing purposes only.")
             batch.pos = self.decentralize(
                 batch, batch_index=batch.batch, entities_centroid=pos_centroid
             )
@@ -206,7 +208,7 @@ class TCPNetModel(GCPNetModel):
                 _, centralized_node_pos = self.centralize(
                     batch, batch_index=batch.batch
                 )
-                batch.frame_dict[1] = self.localize(centralized_node_pos, batch.edge_index)
+                batch.frame_dict = {rank: localize(batch, rank, node_mask) for rank in range(2)}
             encoder_outputs["pos"] = batch.pos  # (n, 3) -> (batch_size, 3)
 
         # Summarize intermediate node representations as final predictions
@@ -216,7 +218,13 @@ class TCPNetModel(GCPNetModel):
                 ScalarVector(h, chi)
             )  # e.g., GCPLayerNorm()
             out = self.invariant_node_projection[1](
-                out, batch.frame_dict[0]
+                out, batch.frame_dict[0 if not self.use_original_gcp else 1],# TODO: node mask here
+                use_original_gcp=self.use_original_gcp,
+                gcp_forward_kwargs={
+                    "edge_index": batch.edge_index,
+                    "node_inputs": True,
+                    "node_mask": None
+                }
             )  # e.g., GCP((h, chi)) -> h'
         encoder_outputs["node_embedding"] = out
 

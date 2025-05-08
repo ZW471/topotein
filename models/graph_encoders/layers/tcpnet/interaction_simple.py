@@ -19,6 +19,8 @@ class TCPInteractions(GCPInteractions):
     def __init__(self, node_dims: ScalarVector, edge_dims: ScalarVector, cfg: DictConfig, layer_cfg: DictConfig,
                  dropout: float = 0.0, nonlinearities: Optional[Tuple[Any, Any]] = None):
         super().__init__(node_dims, edge_dims, cfg, layer_cfg, dropout, nonlinearities)
+
+        self.use_original_gcp = cfg.use_original_gcp
         self.interaction = GCPMessagePassing(
             node_dims,
             node_dims,
@@ -129,8 +131,26 @@ class TCPInteractions(GCPInteractions):
         for module in self.feedforward_network:
             hidden_residual = module(
                 hidden_residual,
-                frames=frame_dict[0]
+                frames=frame_dict[0 if not self.use_original_gcp else 1],
+                use_original_gcp=self.use_original_gcp,
+                gcp_forward_kwargs={
+                    "edge_index": edge_index,
+                    "node_inputs": True,
+                    "node_mask": None
+                }
             )
+
+
+        # apply GCP dropout
+        node_rep = node_rep + self.gcp_dropout["0"](hidden_residual)
+
+        # apply GCP normalization (2)
+        if not self.pre_norm:
+            node_rep = self.gcp_norm["0"](node_rep)
+
+        # update only unmasked node representations and residuals
+        if node_mask is not None:
+            node_rep = node_rep.mask(node_mask.float())
 
         # bypass updating node positions
         if not self.predict_node_positions:
@@ -138,7 +158,7 @@ class TCPInteractions(GCPInteractions):
 
         # update node positions
         node_pos = node_pos + self.derive_x_update(
-            node_rep, edge_index, frame_dict[1], node_mask=node_mask
+            node_rep, edge_index, frame_dict[1].transpose(-1, -2), node_mask=node_mask
         )
 
         # update only unmasked node positions

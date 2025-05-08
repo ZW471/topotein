@@ -36,7 +36,9 @@ class TCP(GCP):
             ],
             Float[torch.Tensor, "batch_num_entities merged_scalar_dim"],
         ],
-        frames: Float[torch.Tensor, "batch_num_edges 3 3"]
+        frames: Float[torch.Tensor, "batch_num_edges 3 3"],
+        use_original_gcp: bool = False,
+        gcp_forward_kwargs: dict = None,
     ) -> Union[
         Tuple[
             Float[torch.Tensor, "batch_num_entities new_scalar_dim"],
@@ -44,6 +46,13 @@ class TCP(GCP):
         ],
         Float[torch.Tensor, "batch_num_entities new_scalar_dim"],
     ]:
+        if use_original_gcp:
+            required_attr = ["edge_index", "node_inputs", "node_mask"]
+            for key in required_attr:
+                if key not in gcp_forward_kwargs:
+                    raise ValueError(f"Missing required argument for original GCP forward: {key}")
+            assert gcp_forward_kwargs["edge_index"].shape[1] == frames.shape[0], "edge_index and frames must have the same number of rows for original GCP forward to work."
+
         if self.vector_input_dim:
             scalar_rep, vector_rep = s_maybe_v
             v_pre = vector_rep.transpose(-1, -2)
@@ -54,11 +63,20 @@ class TCP(GCP):
 
             # curate direction-robust and (by default) chirality-aware scalar geometric features
             vector_down_frames_hidden_rep = self.vector_down_frames(v_pre)
-            scalar_hidden_rep = self.scalarize(
-                vector_down_frames_hidden_rep.transpose(-1, -2),
-                frames,
-                enable_e3_equivariance=self.enable_e3_equivariance,
-            )
+            if not use_original_gcp:
+                scalar_hidden_rep = self.scalarize(
+                    vector_down_frames_hidden_rep.transpose(-1, -2),
+                    frames,
+                    enable_e3_equivariance=self.enable_e3_equivariance,
+                )
+            else:
+                scalar_hidden_rep = super().scalarize(
+                    vector_down_frames_hidden_rep.transpose(-1, -2),
+                    frames=frames.transpose(-1, -2),
+                    enable_e3_equivariance=self.enable_e3_equivariance,
+                    dim_size=vector_down_frames_hidden_rep.shape[0],
+                    **gcp_forward_kwargs
+                )
             merged = torch.cat((merged, scalar_hidden_rep), dim=-1)
         else:
             # bypass updating scalar features using vector information

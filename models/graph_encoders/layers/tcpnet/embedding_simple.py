@@ -22,6 +22,8 @@ class TCPEmbedding(GCPEmbedding):
         nonlinearities = kwargs.get("nonlinearities", ("silu", "silu"))
         cfg = kwargs.get("cfg", None)
 
+        self.use_original_gcp = kwargs.get("use_original_gcp", False)
+
         self.node_embedding = TCP(
             self.node_input_dims,
             self.node_hidden_dims,
@@ -88,11 +90,23 @@ class TCPEmbedding(GCPEmbedding):
 
         edge_rep = self.edge_embedding(
             edge_rep,
-            batch.frame_dict[1],  # TODO: node mask here
+            frames=batch.frame_dict[1],  # TODO: node mask here
+            use_original_gcp=self.use_original_gcp,
+            gcp_forward_kwargs={
+                "edge_index": batch.edge_index,
+                "node_inputs": False,
+                "node_mask": None
+            }
         )
         node_rep = self.node_embedding(
             node_rep,
-            batch.frame_dict[0],# TODO: node mask here
+            frames=batch.frame_dict[0 if not self.use_original_gcp else 1],# TODO: node mask here
+            use_original_gcp=self.use_original_gcp,
+            gcp_forward_kwargs={
+                "edge_index": batch.edge_index,
+                "node_inputs": True,
+                "node_mask": None
+            }
         )
 
         if not self.pre_norm:
