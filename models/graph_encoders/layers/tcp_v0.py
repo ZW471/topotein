@@ -144,18 +144,18 @@ class TCP(GCP):
                 local_scalar_rep_i = torch.zeros(
                     (edge_index.shape[1], 3, 3), device=edge_index.device
                 )
-                local_scalar_rep_i[edge_mask] = torch.matmul(
-                    frames[edge_mask], vector_rep_i[edge_mask]
+                local_scalar_rep_i[edge_mask] = torch.bmm(
+                    vector_rep_i[edge_mask], frames[edge_mask]
                 )
                 local_scalar_rep_i = local_scalar_rep_i.transpose(-1, -2)
             else:
-                local_scalar_rep_i = torch.matmul(frames, vector_rep_i).transpose(-1, -2)
+                local_scalar_rep_i = torch.bmm(vector_rep_i, frames).transpose(-1, -2)
 
             # potentially enable E(3)-equivariance and, thereby, chirality-invariance
             if enable_e3_equivariance:
                 # avoid corrupting gradients with an in-place operation
                 local_scalar_rep_i_copy = local_scalar_rep_i.clone()
-                local_scalar_rep_i_copy[:, :, 1] = torch.abs(local_scalar_rep_i[:, :, 1])
+                local_scalar_rep_i_copy[:, 1, :] = torch.abs(local_scalar_rep_i[:, 1, :])
                 local_scalar_rep_i = local_scalar_rep_i_copy
 
             # reshape frame-derived geometric scalars
@@ -304,7 +304,9 @@ class TCPEmbedding(GCPEmbedding):
             Float[torch.Tensor, "batch_num_cells c_hidden_dim"],
         ],
     ]:
+        batch.f_ij = batch.f_ij.transpose(-1, -2)
         node_rep, edge_rep = super().forward(batch)
+        batch.f_ij = batch.f_ij.transpose(-1, -2)
         cell_rep = ScalarVector(batch.c, batch.rho)
 
         # TODO: calculate cell rep based on updated positions
@@ -344,7 +346,6 @@ class TCPMessagePassing(GCPMessagePassing):
             cell_rep: ScalarVector,
             edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
             frames: Float[torch.Tensor, "batch_num_edges 3 3"],
-            cell_frames: Optional[Float[torch.Tensor, "batch_num_cells 3 3"]] = None,
             node_to_sse_mapping: torch.Tensor = None,
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
     ) -> Float[torch.Tensor, "batch_num_edges message_dim"]:
@@ -421,12 +422,11 @@ class TCPMessagePassing(GCPMessagePassing):
             cell_rep: ScalarVector,
             edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
             frames: Float[torch.Tensor, "batch_num_edges 3 3"],
-            cell_frames: Optional[Float[torch.Tensor, "batch_num_cells 3 3"]] = None,
             node_to_sse_mapping: torch.Tensor = None,
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
     ) -> Tuple[ScalarVector, ScalarVector]:
         message = self.message(
-            node_rep, edge_rep, cell_rep, edge_index, frames, cell_frames, node_to_sse_mapping, node_mask
+            node_rep, edge_rep, cell_rep, edge_index, frames, node_to_sse_mapping, node_mask
         )
         node_aggregate = self.aggregate(
             message, edge_index, dim_size=node_rep.scalar.shape[0]
@@ -612,8 +612,7 @@ class TCPInteractions(GCPInteractions):
             edge_rep=edge_rep,
             cell_rep=cell_rep,
             edge_index=edge_index,
-            frames=frames,
-            cell_frames=cell_frames,
+            frames=frames.transpose(-1, -2),
             node_mask=node_mask,
             node_to_sse_mapping=node_to_sse_mapping,
         )
@@ -658,7 +657,7 @@ class TCPInteractions(GCPInteractions):
             hidden_residual = module(
                 hidden_residual,
                 edge_index,
-                frames,
+                frames.transpose(-1, -2),
                 node_inputs=True,
                 node_mask=node_mask,
             )
@@ -680,7 +679,7 @@ class TCPInteractions(GCPInteractions):
 
         # update node positions
         node_pos = node_pos + self.derive_x_update(
-            node_rep, edge_index, frames, node_mask=node_mask
+            node_rep, edge_index, frames.transpose(-1, -2), node_mask=node_mask
         )
 
         # update only unmasked node positions

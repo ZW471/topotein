@@ -227,7 +227,7 @@ class TCPNetModel(GCPNetModel):
                 ScalarVector(h, chi)
             )  # e.g., GCPLayerNorm()
             out = self.invariant_node_projection[1](
-                out, batch.edge_index, batch.f_ij, node_inputs=True
+                out, batch.edge_index, batch.f_ij.transpose(-1, -2), node_inputs=True
             )  # e.g., GCP((h, chi)) -> h'
 
         encoder_outputs["node_embedding"] = out
