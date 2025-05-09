@@ -99,7 +99,7 @@ class TCPNetModel(GCPNetModel):
 
         # Position-wise operations
         self.centralize = partial(centralize, key="pos")
-        self.localize = partial(localize, norm_pos_diff=module_cfg.norm_pos_diff)
+        self.localize = partial(localize, norm_pos_diff=module_cfg.norm_pos_diff, frame_type="pca")
         self.decentralize = partial(decentralize, key="pos")
 
         # Input embeddings

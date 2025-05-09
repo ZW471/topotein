@@ -39,7 +39,7 @@ class TCP(GCP):
         self.input_type = input_type
 
         if self.input_type == self.CELL_TYPE and self.vector_input_dim:
-            scalar_vector_frame_dim = scalarization_vectorization_output_dim * 3
+            scalar_vector_frame_dim = scalarization_vectorization_output_dim * 6 + 3 * 4
             self.scalar_out = (
                 nn.Sequential(
                     nn.Linear(
@@ -101,7 +101,7 @@ class TCP(GCP):
 
             cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
 
-            mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] != cell_edge_index[1]))  # mask of columns that don’t contain NaN, and no self-loops
+            mask = ((~(cell_edge_index[0] == -1)) & (cell_edge_index[0] != cell_edge_index[1]))  # mask of columns that don’t contain NaN, and no self-loops
 
             if edge_mask is not None:
                 f_e_ij = frames[edge_mask][mask]
@@ -112,10 +112,14 @@ class TCP(GCP):
             cell_edge_index = cell_edge_index[:, mask]  # c -> c
 
             vector_rep_i = vector_rep_i[cell_edge_index[0]]
-            # print(vector_rep_i)
+            sse_com = get_com(node_pos[node_to_sse_mapping.indices()[0]], node_to_sse_mapping.indices()[1], node_to_sse_mapping.size()[1])[cell_edge_index[0]]
+            r_com_i = (node_pos[edge_index[0, mask]] - sse_com).unsqueeze(1)
+            vector_rep_i = torch.concat([vector_rep_i, r_com_i, torch.cross(r_com_i, vector_rep_i, dim=-1), cell_frames[cell_edge_index[0]].transpose(-1, -2)], dim=1)
             if enable_e3_equivariance:
                 raise NotImplementedError('E3 equivariance is not yet implemented for cell inputs.')
             local_scalar_rep_i = torch.bmm(vector_rep_i, f_e_ij)
+
+
             local_scalar_rep_i = local_scalar_rep_i.reshape(vector_rep_i.shape[0], -1)
 
 
