@@ -299,7 +299,7 @@ class TCPEmbedding(GCPEmbedding):
         if self.pre_norm:
             cell_rep = self.cell_normalization(cell_rep)
 
-        node_to_sse_mapping = getattr(batch, "node_to_sse_mapping", None)
+        node_to_sse_mapping = getattr(batch, "N0_2", batch.sse_cell_complex.calculator.eval("B0_2"))
 
         cell_rep = self.cell_embedding(
             cell_rep,
