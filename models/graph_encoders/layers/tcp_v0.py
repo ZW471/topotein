@@ -39,7 +39,7 @@ class TCP(GCP):
         self.input_type = input_type
 
         if self.input_type == self.CELL_TYPE and self.vector_input_dim:
-            scalar_vector_frame_dim = scalarization_vectorization_output_dim * 6
+            scalar_vector_frame_dim = scalarization_vectorization_output_dim * 3
             self.scalar_out = (
                 nn.Sequential(
                     nn.Linear(
@@ -85,11 +85,13 @@ class TCP(GCP):
         else:
             raise ValueError(f"Invalid input type: {input_type}")
 
+            # potentially enable E(3)-equivariance and, thereby, chirality-invariance
+        if enable_e3_equivariance:
+            frames[:, 1, :] = torch.abs(frames[:, 1, :])
+            if cell_frames is not None:
+                cell_frames[:, 1, :] = torch.abs(cell_frames[:, 1, :])
+
         # project equivariant values onto corresponding local frames
-        if vector_rep_i.ndim == 2:
-            vector_rep_i = vector_rep_i.unsqueeze(-1)
-        elif vector_rep_i.ndim == 3:
-            vector_rep_i = vector_rep_i.transpose(-1, -2)
 
         if input_type == self.CELL_TYPE:
             edge_mask = None
@@ -106,37 +108,17 @@ class TCP(GCP):
             else:
                 f_e_ij = frames[mask]
 
-            # f_e_ij[:, 0, :] = f_e_ij[:, 0, :].abs()
 
             cell_edge_index = cell_edge_index[:, mask]  # c -> c
-            edge_index = edge_index[:, mask]  # n -> n
-
-            # print(cell_edge_index.shape, edge_index.shape)
-
-            f_c_i = cell_frames[cell_edge_index[0]]
-            f_c_j = cell_frames[cell_edge_index[1]]
 
             vector_rep_i = vector_rep_i[cell_edge_index[0]]
             # print(vector_rep_i)
-
-            fff = torch.einsum('bij,bjk,bkl->bil', f_c_i, f_e_ij, f_c_j)  # = torch.bmm(torch.bmm(f_c_i, f_e_ij), f_c_j)
-            local_scalar_rep_i = torch.bmm(vector_rep_i, fff)
-
-            node_pos_in_sse = node_pos[edge_index[0]]
-            com, _ = centralize(
-                node_pos_in_sse, 
-                cell_edge_index[0], 
-                node_mask=node_mask[edge_index[0]] if node_mask is not None else None
-            )
-            com_lifted = com[cell_edge_index[0]]
-            r_com_i = node_pos_in_sse - com_lifted
-            local_torque_rep_i = torch.cross(r_com_i.unsqueeze(-1), torch.bmm(vector_rep_i, fff), dim=1)
-
-            local_scalar_rep_i = local_scalar_rep_i.transpose(-1, -2).reshape(vector_rep_i.shape[0], 9)
-            local_torque_rep_i = local_torque_rep_i.transpose(-1, -2).reshape(vector_rep_i.shape[0], 9)
-
             if enable_e3_equivariance:
                 raise NotImplementedError('E3 equivariance is not yet implemented for cell inputs.')
+            local_scalar_rep_i = torch.bmm(vector_rep_i, f_e_ij)
+            local_scalar_rep_i = local_scalar_rep_i.reshape(vector_rep_i.shape[0], -1)
+
+
 
         elif input_type == self.NODE_TYPE or input_type == self.EDGE_TYPE:
             if node_mask is not None:
@@ -149,17 +131,10 @@ class TCP(GCP):
                 )
                 local_scalar_rep_i = local_scalar_rep_i.transpose(-1, -2)
             else:
-                local_scalar_rep_i = torch.bmm(vector_rep_i, frames).transpose(-1, -2)
-
-            # potentially enable E(3)-equivariance and, thereby, chirality-invariance
-            if enable_e3_equivariance:
-                # avoid corrupting gradients with an in-place operation
-                local_scalar_rep_i_copy = local_scalar_rep_i.clone()
-                local_scalar_rep_i_copy[:, 1, :] = torch.abs(local_scalar_rep_i[:, 1, :])
-                local_scalar_rep_i = local_scalar_rep_i_copy
+                local_scalar_rep_i = torch.bmm(vector_rep_i, frames)
 
             # reshape frame-derived geometric scalars
-            local_scalar_rep_i = local_scalar_rep_i.reshape(vector_rep_i.shape[0], 9)
+            local_scalar_rep_i = local_scalar_rep_i.reshape(vector_rep_i.shape[0], -1)
         else:
             raise ValueError(f"Invalid input type: {input_type}")
 
@@ -176,13 +151,13 @@ class TCP(GCP):
         elif input_type == self.EDGE_TYPE:
             return local_scalar_rep_i
         elif input_type == self.CELL_TYPE:
-            return torch.cat([torch_scatter.scatter(
-                rep_i,
+            return torch_scatter.scatter(
+                local_scalar_rep_i,
                 cell_edge_index[0],
                 dim=0,
                 dim_size=dim_size,
                 reduce="mean",
-            ) for rep_i in [local_scalar_rep_i, local_torque_rep_i]], dim=1)
+            )
         else:
             raise ValueError(f"Invalid input type: {input_type}")
 
