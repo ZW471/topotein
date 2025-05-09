@@ -37,9 +37,15 @@ class TCP(GCP):
                          **kwargs)
 
         self.input_type = input_type
-
-        if self.input_type == self.CELL_TYPE and self.vector_input_dim:
-            scalar_vector_frame_dim = scalarization_vectorization_output_dim * 6 + 3 * 4
+        if not self.vector_input_dim:
+            return
+        if self.input_type != self.EDGE_TYPE:
+            if self.input_type == self.CELL_TYPE:
+                scalar_vector_frame_dim = scalarization_vectorization_output_dim * 6 + 3 * 4
+            elif self.input_type == self.NODE_TYPE:
+                scalar_vector_frame_dim = scalarization_vectorization_output_dim * 3 + 3 * 3
+            else:
+                raise ValueError(f"Invalid input type: {self.input_type}")
             self.scalar_out = (
                 nn.Sequential(
                     nn.Linear(
@@ -57,26 +63,19 @@ class TCP(GCP):
                     self.scalar_output_dim,
                     )
             )
-    @staticmethod
-    def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping):
-        cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
 
-        mask = ((~(cell_edge_index[0] == -1)) & (cell_edge_index[0] != cell_edge_index[1]))
-
-        return cell_edge_index[:, mask], mask
 
     @jaxtyped(typechecker=typechecker)
     def scalarize(
         self,
         vector_rep: Float[torch.Tensor, "batch_num_entities 3 3"],
         edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
-        frames: Float[torch.Tensor, "batch_num_edges 3 3"],
+        frame_dict: dict,
         enable_e3_equivariance: bool,
         dim_size: int,
         node_pos: Optional[Float[torch.Tensor, "n_nodes 3"]] = None,
         node_to_sse_mapping: torch.Tensor = None,
         node_mask: Optional[Bool[torch.Tensor, "n_nodes"]] = None,
-        cell_frames: Optional[Float[torch.Tensor, "batch_num_cells 3 3"]] = None,
     ) -> Float[torch.Tensor, "effective_batch_num_entities out_scalar_dim"]:
         row, col = edge_index[0], edge_index[1]
         input_type = self.input_type
@@ -91,11 +90,15 @@ class TCP(GCP):
         else:
             raise ValueError(f"Invalid input type: {input_type}")
 
+        node_frames = frame_dict.get("0", None)
+        edge_frames = frame_dict["1"]
+        sse_frames = frame_dict.get("2", None)
+
             # potentially enable E(3)-equivariance and, thereby, chirality-invariance
         if enable_e3_equivariance:
-            frames[:, 1, :] = torch.abs(frames[:, 1, :])
-            if cell_frames is not None:
-                cell_frames[:, 1, :] = torch.abs(cell_frames[:, 1, :])
+            edge_frames[:, 1, :] = torch.abs(edge_frames[:, 1, :])
+            if sse_frames is not None:
+                sse_frames[:, 1, :] = torch.abs(sse_frames[:, 1, :])
 
         # project equivariant values onto corresponding local frames
 
@@ -105,17 +108,27 @@ class TCP(GCP):
                 edge_mask = node_mask[edge_index[0]] & node_mask[edge_index[1]]
                 edge_index = edge_index[:, edge_mask]
 
-            cell_edge_index, mask = TCP.get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping)
+            cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
+
+            mask = ((~(cell_edge_index[0] == -1)) & (cell_edge_index[0] != cell_edge_index[1]))  # mask of columns that don’t contain NaN, and no self-loops
 
             if edge_mask is not None:
-                f_e_ij = frames[edge_mask][mask]
+                f_e_ij = edge_frames[edge_mask][mask]
             else:
-                f_e_ij = frames[mask]
+                f_e_ij = edge_frames[mask]
+
+
+            cell_edge_index = cell_edge_index[:, mask]  # c -> c
 
             vector_rep_i = vector_rep_i[cell_edge_index[0]]
             sse_com = get_com(node_pos[node_to_sse_mapping.indices()[0]], node_to_sse_mapping.indices()[1], node_to_sse_mapping.size()[1])[cell_edge_index[0]]
             r_com_i = (node_pos[edge_index[0, mask]] - sse_com).unsqueeze(1)
-            vector_rep_i = torch.concat([vector_rep_i, r_com_i, torch.cross(r_com_i, vector_rep_i, dim=-1), cell_frames[cell_edge_index[0]].transpose(-1, -2)], dim=1)
+            vector_rep_i = torch.concat([
+                vector_rep_i,
+                r_com_i,
+                torch.cross(r_com_i, vector_rep_i, dim=-1),
+                sse_frames[cell_edge_index[0]].transpose(-1, -2)
+            ], dim=1)
             if enable_e3_equivariance:
                 raise NotImplementedError('E3 equivariance is not yet implemented for cell inputs.')
             local_scalar_rep_i = torch.bmm(vector_rep_i, f_e_ij)
@@ -132,11 +145,11 @@ class TCP(GCP):
                     (edge_index.shape[1], 3, 3), device=edge_index.device
                 )
                 local_scalar_rep_i[edge_mask] = torch.bmm(
-                    vector_rep_i[edge_mask], frames[edge_mask]
+                    vector_rep_i[edge_mask], edge_frames[edge_mask]
                 )
                 local_scalar_rep_i = local_scalar_rep_i.transpose(-1, -2)
             else:
-                local_scalar_rep_i = torch.bmm(vector_rep_i, frames)
+                local_scalar_rep_i = torch.bmm(vector_rep_i, edge_frames)
 
             # reshape frame-derived geometric scalars
             local_scalar_rep_i = local_scalar_rep_i.reshape(vector_rep_i.shape[0], -1)
@@ -179,8 +192,7 @@ class TCP(GCP):
             Float[torch.Tensor, "batch_num_entities merged_scalar_dim"],
         ],
         edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
-        frames: Float[torch.Tensor, "batch_num_edges 3 3"],
-        cell_frames: Optional[Float[torch.Tensor, "batch_num_cells 3 3"]] = None,
+        frame_dict: dict,
         node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
         node_pos: Optional[Float[torch.Tensor, "n_nodes 3"]] = None,
         node_to_sse_mapping: Optional[Int64[torch.Tensor, "n_nodes batch_num_cells"]] = None,
@@ -204,11 +216,10 @@ class TCP(GCP):
             scalar_hidden_rep = self.scalarize(
                 vector_down_frames_hidden_rep.transpose(-1, -2),
                 edge_index,
-                frames,
+                frame_dict=frame_dict,
                 enable_e3_equivariance=self.enable_e3_equivariance,
                 dim_size=vector_down_frames_hidden_rep.shape[0],
                 node_mask=node_mask,
-                cell_frames=cell_frames,
                 node_pos=node_pos,
                 node_to_sse_mapping=node_to_sse_mapping,
             )
@@ -234,23 +245,47 @@ class TCP(GCP):
 
 
 class TCPEmbedding(GCPEmbedding):
-    def __init__(self, cell_input_dims, cell_hidden_dims, *args, **kwargs):
+    def __init__(self, sse_input_dims, sse_hidden_dims, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cell_input_dims = cell_input_dims
-        self.cell_hidden_dims = cell_hidden_dims
+        self.node_input_dims = kwargs.get("node_input_dims")
+        self.node_hidden_dims = kwargs.get("node_hidden_dims")
+        self.edge_input_dims = kwargs.get("edge_input_dims")
+        self.edge_hidden_dims = kwargs.get("edge_hidden_dims")
+        self.sse_input_dims = sse_input_dims
+        self.sse_hidden_dims = sse_hidden_dims
 
         use_gcp_norm = kwargs.get("use_gcp_norm", True)
         nonlinearities = kwargs.get("nonlinearities", ("silu", "silu"))
         cfg = kwargs.get("cfg", None)
 
-        self.cell_normalization = GCPLayerNorm(
-            cell_input_dims if self.pre_norm else cell_hidden_dims,
+        self.sse_normalization = GCPLayerNorm(
+            self.sse_input_dims if self.pre_norm else self.sse_hidden_dims,
             use_gcp_norm=use_gcp_norm
         )
 
-        self.cell_embedding = TCP(
-            cell_input_dims,
-            cell_hidden_dims,
+        self.node_embedding = TCP(
+            self.node_input_dims,
+            self.node_hidden_dims,
+            input_type=TCP.NODE_TYPE,
+            nonlinearities=("none", "none"),
+            scalar_gate=cfg.scalar_gate,
+            vector_gate=cfg.vector_gate,
+            enable_e3_equivariance=cfg.enable_e3_equivariance,
+        )
+
+        self.edge_embedding = TCP(
+            self.edge_input_dims,
+            self.edge_hidden_dims,
+            input_type=TCP.EDGE_TYPE,
+            nonlinearities=nonlinearities,
+            scalar_gate=cfg.scalar_gate,
+            vector_gate=cfg.vector_gate,
+            enable_e3_equivariance=cfg.enable_e3_equivariance,
+        )
+
+        self.sse_embedding = TCP(
+            self.sse_input_dims,
+            self.sse_hidden_dims,
             input_type=TCP.CELL_TYPE,
             nonlinearities=nonlinearities,
             scalar_gate=cfg.scalar_gate,
@@ -282,38 +317,60 @@ class TCPEmbedding(GCPEmbedding):
                 Float[torch.Tensor, "batch_num_cells c rho_hidden_dim"],
             ],
             Float[torch.Tensor, "batch_num_cells c_hidden_dim"],
-        ],
+        ]
     ]:
-        batch.f_ij = batch.f_ij.transpose(-1, -2)
-        node_rep, edge_rep = super().forward(batch)
-        batch.f_ij = batch.f_ij.transpose(-1, -2)
-        cell_rep = ScalarVector(batch.c, batch.rho)
+        if self.atom_embedding is not None:
+            node_rep = ScalarVector(self.atom_embedding(batch.h), batch.chi)
+        else:
+            node_rep = ScalarVector(batch.h, batch.chi)
 
-        # TODO: calculate cell rep based on updated positions
-        cell_rep = (
-            cell_rep.scalar if not self.cell_embedding.vector_input_dim else cell_rep
+        edge_rep = ScalarVector(batch.e, batch.xi)
+        sse_rep = ScalarVector(batch.c, batch.rho)
+
+        edge_vectors = (
+                batch.pos[batch.edge_index[0]] - batch.pos[batch.edge_index[1]]
+        )  # [n_edges, 3]
+        edge_lengths = torch.linalg.norm(edge_vectors, dim=-1)  # [n_edges, 1]
+        edge_rep = ScalarVector(
+            torch.cat((edge_rep.scalar, self.radial_embedding(edge_lengths)), dim=-1),
+            edge_rep.vector,
+        )
+
+        edge_rep = (
+            edge_rep.scalar if not self.edge_embedding.vector_input_dim else edge_rep
+        )
+        node_rep = (
+            node_rep.scalar if not self.node_embedding.vector_input_dim else node_rep
+        )
+        sse_rep = (
+            sse_rep.scalar if not self.sse_embedding.vector_input_dim else sse_rep
         )
 
         if self.pre_norm:
-            cell_rep = self.cell_normalization(cell_rep)
+            edge_rep = self.edge_normalization(edge_rep)
+            node_rep = self.node_normalization(node_rep)
+            sse_rep = self.sse_normalization(sse_rep)
 
-        node_to_sse_mapping = getattr(batch, "node_to_sse_mapping", None)
-
-        cell_rep = self.cell_embedding(
-            cell_rep,
-            batch.edge_index,
-            frames=batch.f_ij,
-            cell_frames=batch.f_ij_cell,
-            node_mask=getattr(batch, "mask", None),
-            node_pos=batch.pos,
-            node_to_sse_mapping=node_to_sse_mapping
+        edge_rep = self.edge_embedding(
+            edge_rep,
+            batch.frame_dict[1],
+        )
+        node_rep = self.node_embedding(
+            node_rep,
+            batch.frame_dict[0],
+        )
+        sse_rep = self.sse_embedding(
+            sse_rep,
+            batch.frame_dict[2]
         )
 
         if not self.pre_norm:
-            cell_rep = self.cell_normalization(cell_rep)
+            edge_rep = self.edge_normalization(edge_rep)
+            node_rep = self.node_normalization(node_rep)
+            sse_rep = self.sse_normalization(sse_rep)
 
 
-        return node_rep, edge_rep, cell_rep
+        return node_rep, edge_rep, sse_rep
 
 
 class TCPMessagePassing(GCPMessagePassing):
@@ -412,10 +469,10 @@ class TCPMessagePassing(GCPMessagePassing):
             message, edge_index, dim_size=node_rep.scalar.shape[0]
         )
 
-        cell_edge_index, mask = TCP.get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping)
-
+        cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
+        mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] != cell_edge_index[1]))
         cell_aggregate = self.aggregate(
-            message[mask], cell_edge_index, dim_size=cell_rep.scalar.shape[0]
+            message[mask], cell_edge_index[:, mask], dim_size=cell_rep.scalar.shape[0]
         )
 
         node_aggregate = ScalarVector.recover(node_aggregate, self.vector_output_dim)
