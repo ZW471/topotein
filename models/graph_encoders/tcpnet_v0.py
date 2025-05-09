@@ -182,7 +182,6 @@ class TCPNetModel(GCPNetModel):
         # Craft complete local frames corresponding to each edge
         batch.f_ij = self.localize(batch, rank=1)
         batch.f_ij_cell = self.localize(batch, rank=2)
-        batch.node_to_sse_mapping = batch.N0_2
 
         # Embed node and edge input features
         (h, chi), (e, xi), (c, rho) = self.tcp_embedding(batch)
@@ -195,10 +194,11 @@ class TCPNetModel(GCPNetModel):
                 cell_rep=ScalarVector(c, rho),
                 frames=batch.f_ij,
                 cell_frames=batch.f_ij_cell,
+                node_frames=localize(batch, 0),
                 edge_index=batch.edge_index,
                 node_mask = getattr(batch, "mask", None),
                 node_pos=batch.pos,
-                node_to_sse_mapping=batch.node_to_sse_mapping,
+                ccc=batch.sse_cell_complex
             )
 
         # Record final version of each feature in `Batch` object

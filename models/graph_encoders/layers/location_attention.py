@@ -42,7 +42,7 @@ class GeometryLocationAttentionHead(nn.Module):
         """
         super().__init__()
         self.from_dim = from_sv_dim
-        self.to_dim = from_sv_dim
+        self.to_dim = to_sv_dim
         self.use_vector_features = use_vector_features
         self.hidden_dim = hidden_dim
 

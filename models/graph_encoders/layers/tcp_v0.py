@@ -14,6 +14,8 @@ from graphein.protein.tensor.data import ProteinBatch
 import torch
 from jaxtyping import Bool, Float, Int64, jaxtyped
 
+from topotein.features.topotein_complex import TopoteinComplex
+from topotein.models.graph_encoders.layers.location_attention import GeometryLocationAttention
 from topotein.models.utils import centralize, lift_features_with_padding, map_to_cell_index, get_com
 from omegaconf import DictConfig, OmegaConf
 
@@ -551,6 +553,33 @@ class TCPInteractions(GCPInteractions):
 
         self.cell_ff_network = nn.ModuleList(ff_interaction_layers)
 
+        self.attention_head_num = 4
+        self.attention_hidden_dim = None
+        self.disable_attention = getattr(cfg, "disable_attention", False)
+
+        self.attentive_node2sse = GeometryLocationAttention(
+            from_sv_dim=node_dims,
+            to_sv_dim=node_dims,
+            num_heads=self.attention_head_num,
+            hidden_dim=self.attention_hidden_dim,
+            activation='silu',
+            concat=True,
+            higher_to_lower=False,
+            disable_attention=self.disable_attention,
+            pool='sum'
+        )
+
+        self.attentive_sse2node = GeometryLocationAttention(
+            from_sv_dim=cell_dims,
+            to_sv_dim=node_dims,
+            num_heads=self.attention_head_num,
+            hidden_dim=self.attention_hidden_dim,
+            activation='silu',
+            concat=True,
+            higher_to_lower=True,
+            disable_attention=self.disable_attention,
+        )
+
     @jaxtyped(typechecker=typechecker)
     def forward(
             self,
@@ -569,9 +598,10 @@ class TCPInteractions(GCPInteractions):
             edge_index: Int64[torch.Tensor, "2 batch_num_edges"],
             frames: Float[torch.Tensor, "batch_num_edges 3 3"],
             cell_frames: Optional[Float[torch.Tensor, "batch_num_cells 3 3"]] = None,
+            node_frames: Optional[Float[torch.Tensor, "batch_num_nodes 3 3"]] = None,
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
             node_pos: Optional[Float[torch.Tensor, "batch_num_nodes 3"]] = None,
-            node_to_sse_mapping: torch.Tensor = None,
+            ccc: TopoteinComplex = None
     ) -> Tuple[
         Tuple[
             Float[torch.Tensor, "batch_num_nodes hidden_dim"],
@@ -581,6 +611,9 @@ class TCPInteractions(GCPInteractions):
     ]:
         node_rep = ScalarVector(node_rep[0], node_rep[1])
         edge_rep = ScalarVector(edge_rep[0], edge_rep[1])
+
+        node_to_sse_mapping = ccc.incidence_matrix(0, 2)
+        sse_to_node_mapping = ccc.calculator.eval("B0_2.T")
 
         # apply GCP normalization (1)
         if self.pre_norm:
@@ -598,17 +631,17 @@ class TCPInteractions(GCPInteractions):
         )
 
         # aggregate input and hidden features
-        node_rep_agg = ScalarVector(*[torch_scatter.scatter(
-            rep[node_to_sse_mapping.indices()[0]],
-            node_to_sse_mapping.indices()[1],
-            dim=0,
-            dim_size=node_to_sse_mapping.shape[1],
-            reduce="mean",
-        ) for rep in node_rep.vs()])
-        cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
-        mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] == cell_edge_index[1]))  # mask of columns, select edge inside
-
-        cell_edge_index = cell_edge_index[:, mask]
+        sse_com = ccc.get_com(2)
+        node_rep_agg = self.attentive_node2sse(
+            from_rank_sv=node_rep,
+            to_rank_sv=hidden_residual_cell,
+            incidence_matrix=node_to_sse_mapping,
+            from_frame=node_frames,
+            to_frame=cell_frames,
+            from_pos=node_pos,
+            to_pos=sse_com[node_to_sse_mapping.indices()[1]]
+        )
+        cell_edge_index, mask = TCP.get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping)
         edge_rep_agg = ScalarVector(*[torch_scatter.scatter(
             rep[mask],
             cell_edge_index[0],
@@ -629,9 +662,17 @@ class TCPInteractions(GCPInteractions):
                 node_to_sse_mapping=node_to_sse_mapping
             )
 
-        cell_hidden_residual = ScalarVector(*[lift_features_with_padding(res, neighborhood=node_to_sse_mapping) for res in cell_hidden_residual.vs()])
-
-        hidden_residual = ScalarVector(*hidden_residual.concat((node_rep, cell_hidden_residual)))  # h_i || m_e || m_c
+        sse_rep_to_node = self.attentive_sse2node(
+            from_rank_sv=cell_hidden_residual,
+            to_rank_sv=hidden_residual,
+            incidence_matrix=sse_to_node_mapping,
+            from_frame=cell_frames,
+            to_frame=node_frames,
+            to_pos=node_pos,
+            from_pos=sse_com[node_to_sse_mapping.indices()[1]]
+        )
+        sse_rep_to_node = ScalarVector(*[lift_features_with_padding(res, neighborhood=node_to_sse_mapping) for res in sse_rep_to_node.vs()])
+        hidden_residual = ScalarVector(*hidden_residual.concat((node_rep, sse_rep_to_node)))  # h_i || m_e || m_c
         # propagate with feedforward layers
         for module in self.feedforward_network:
             hidden_residual = module(
