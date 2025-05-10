@@ -188,7 +188,7 @@ class TCPNetModel(GCPNetModel):
 
         # Update graph features using a series of geometric message-passing layers
         for layer in self.interaction_layers:
-            (h, chi), batch.pos = layer(
+            (h, chi), batch.pos, (c, rho) = layer(
                 node_rep=ScalarVector(h, chi),
                 edge_rep=ScalarVector(e, xi),
                 cell_rep=ScalarVector(c, rho),

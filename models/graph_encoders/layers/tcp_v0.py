@@ -60,10 +60,13 @@ class TCP(GCP):
                     )
             )
     @staticmethod
-    def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping):
+    def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping, must_between_sse=True):
         cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
 
-        mask = ((~(cell_edge_index[0] == -1)) & (cell_edge_index[0] != cell_edge_index[1]))
+        if must_between_sse:
+            mask = ((~(cell_edge_index == -1).any(dim=0)) & (cell_edge_index[0] != cell_edge_index[1]))
+        else:
+            mask = ((~(cell_edge_index[0] == -1)) & (cell_edge_index[0] != cell_edge_index[1]))
 
         return cell_edge_index[:, mask], mask
 
@@ -454,10 +457,10 @@ class TCPInteractions(GCPInteractions):
         ff_GCP = partial(get_GCP_with_custom_cfg, cfg=ff_cfg)
 
         self.gcp_norm = nn.ModuleList(
-            [GCPLayerNorm(node_dims, use_gcp_norm=layer_cfg.use_gcp_norm)]
+            [GCPLayerNorm(node_dims, use_gcp_norm=layer_cfg.use_gcp_norm), GCPLayerNorm(cell_dims, use_gcp_norm=layer_cfg.use_gcp_norm)]
         )
         self.gcp_dropout = nn.ModuleList(
-            [GCPDropout(dropout, use_gcp_dropout=layer_cfg.use_gcp_dropout)]
+            [GCPDropout(dropout, use_gcp_dropout=layer_cfg.use_gcp_dropout), GCPDropout(dropout, use_gcp_dropout=layer_cfg.use_gcp_dropout)]
         )
 
         # build out feedforward (FF) network modules
@@ -553,7 +556,7 @@ class TCPInteractions(GCPInteractions):
 
         self.cell_ff_network = nn.ModuleList(ff_interaction_layers)
 
-        self.attention_head_num = 4
+        self.attention_head_num = 1
         self.attention_hidden_dim = None
         self.disable_attention = getattr(cfg, "disable_attention", False)
 
@@ -562,7 +565,7 @@ class TCPInteractions(GCPInteractions):
             to_sv_dim=node_dims,
             num_heads=self.attention_head_num,
             hidden_dim=self.attention_hidden_dim,
-            activation='silu',
+            activation='leaky_relu',
             concat=True,
             higher_to_lower=False,
             disable_attention=self.disable_attention,
@@ -574,7 +577,7 @@ class TCPInteractions(GCPInteractions):
             to_sv_dim=node_dims,
             num_heads=self.attention_head_num,
             hidden_dim=self.attention_hidden_dim,
-            activation='silu',
+            activation='leaky_relu',
             concat=True,
             higher_to_lower=True,
             disable_attention=self.disable_attention,
@@ -608,6 +611,10 @@ class TCPInteractions(GCPInteractions):
             Float[torch.Tensor, "batch_num_nodes n 3"],
         ],
         Optional[Float[torch.Tensor, "batch_num_nodes 3"]],
+        Tuple[
+            Float[torch.Tensor, "batch_num_cells cell_hidden_dim"],
+            Float[torch.Tensor, "batch_num_cells d 3"],
+        ],
     ]:
         node_rep = ScalarVector(node_rep[0], node_rep[1])
         edge_rep = ScalarVector(edge_rep[0], edge_rep[1])
@@ -618,6 +625,7 @@ class TCPInteractions(GCPInteractions):
         # apply GCP normalization (1)
         if self.pre_norm:
             node_rep = self.gcp_norm[0](node_rep)
+            cell_rep = self.gcp_norm[1](cell_rep)
 
         # forward propagate with interaction module
         hidden_residual, hidden_residual_cell = self.interaction(
@@ -685,10 +693,12 @@ class TCPInteractions(GCPInteractions):
 
         # apply GCP dropout
         node_rep = node_rep + self.gcp_dropout[0](hidden_residual)
+        sse_rep = cell_rep + self.gcp_dropout[1](cell_hidden_residual)
 
         # apply GCP normalization (2)
         if not self.pre_norm:
             node_rep = self.gcp_norm[0](node_rep)
+            sse_rep = self.gcp_norm[1](sse_rep)
 
         # update only unmasked node representations and residuals
         if node_mask is not None:
@@ -696,7 +706,7 @@ class TCPInteractions(GCPInteractions):
 
         # bypass updating node positions
         if not self.predict_node_positions:
-            return node_rep, node_pos
+            return node_rep, node_pos, sse_rep
 
         # update node positions
         node_pos = node_pos + self.derive_x_update(
@@ -708,7 +718,7 @@ class TCPInteractions(GCPInteractions):
             node_pos = node_pos * node_mask.float().unsqueeze(-1)
 
         # TODO: also allow cell_rep update
-        return node_rep, node_pos
+        return node_rep, node_pos, sse_rep
 
 
 @typechecker
