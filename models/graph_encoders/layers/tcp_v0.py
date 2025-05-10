@@ -60,7 +60,7 @@ class TCP(GCP):
                     )
             )
     @staticmethod
-    def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping, must_between_sse=False):
+    def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping, must_between_sse=True):
         cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
 
         if must_between_sse:
@@ -110,7 +110,7 @@ class TCP(GCP):
                 edge_mask = node_mask[edge_index[0]] & node_mask[edge_index[1]]
                 edge_index = edge_index[:, edge_mask]
 
-            cell_edge_index, mask = TCP.get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping)
+            cell_edge_index, mask = TCP.get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping, must_between_sse=False)
 
             if edge_mask is not None:
                 f_e_ij = frames[edge_mask][mask]
@@ -558,7 +558,7 @@ class TCPInteractions(GCPInteractions):
 
         self.attention_head_num = 1
         self.attention_hidden_dim = None
-        self.disable_attention = getattr(cfg, "disable_attention", False)
+        self.disable_attention = getattr(cfg, "disable_attention", True)
 
         self.attentive_node2sse = GeometryLocationAttention(
             from_sv_dim=node_dims,
