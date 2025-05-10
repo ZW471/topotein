@@ -87,7 +87,7 @@ def compute_scalar_sse_features(
         elif feature == "sse_vector_norms":
             vectors = vector_features(x)
             feats.append(torch.norm(torch.stack(vectors, dim=2), dim=1))
-        elif feature == "std_wrt_localized_frame":
+        elif feature == "std_wrt_localized_frame":  # this uses pos diff frame rather than pca frame
             feats.append(std_wrt_localized_frame(x))
         else:
             raise ValueError(f"Unknown cell feature {feature}")

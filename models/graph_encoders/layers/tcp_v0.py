@@ -60,7 +60,7 @@ class TCP(GCP):
                     )
             )
     @staticmethod
-    def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping, must_between_sse=True):
+    def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping, must_between_sse=False):
         cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
 
         if must_between_sse:
