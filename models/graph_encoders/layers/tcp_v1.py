@@ -8,7 +8,7 @@ from torch import nn
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.graph_encoders.layers.gcp import GCPEmbedding, GCPLayerNorm, GCP, GCPInteractions, \
     GCPMessagePassing, get_GCP_with_custom_cfg, GCPDropout
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union, Dict
 from torch_geometric.data import Batch
 from graphein.protein.tensor.data import ProteinBatch
 import torch
@@ -16,7 +16,7 @@ from jaxtyping import Bool, Float, Int64, jaxtyped
 
 from topotein.features.topotein_complex import TopoteinComplex
 from topotein.models.graph_encoders.layers.location_attention import GeometryLocationAttention
-from topotein.models.utils import centralize, lift_features_with_padding, map_to_cell_index, get_com
+from topotein.models.utils import centralize, lift_features_with_padding, map_to_cell_index, get_com, get_scalar_rep
 from omegaconf import DictConfig, OmegaConf
 
 from proteinworkshop.models.utils import localize, safe_norm, get_activations
@@ -40,26 +40,45 @@ class TCP(GCP):
                          **kwargs)
 
         self.input_type = input_type
-
-        if self.input_type == self.SSE_TYPE and self.vector_input_dim:
-            scalar_vector_frame_dim = scalarization_vectorization_output_dim * 6 + 3 * 4
-            self.scalar_out = (
-                nn.Sequential(
-                    nn.Linear(
-                        self.hidden_dim
-                        + self.scalar_input_dim
-                        + scalar_vector_frame_dim,
-                        self.scalar_output_dim,
-                        ),
-                    get_activations(scalar_out_nonlinearity),
-                    nn.Linear(self.scalar_output_dim, self.scalar_output_dim),
-                )
-                if feedforward_out
-                else nn.Linear(
-                    self.hidden_dim + self.scalar_input_dim + scalar_vector_frame_dim,
-                    self.scalar_output_dim,
+        if self.vector_input_dim:
+            if self.input_type == self.SSE_TYPE:
+                scalar_vector_frame_dim = scalarization_vectorization_output_dim * 6 + 3 * 4
+                self.scalar_out = (
+                    nn.Sequential(
+                        nn.Linear(
+                            self.hidden_dim
+                            + self.scalar_input_dim
+                            + scalar_vector_frame_dim,
+                            self.scalar_output_dim,
+                            ),
+                        get_activations(scalar_out_nonlinearity),
+                        nn.Linear(self.scalar_output_dim, self.scalar_output_dim),
                     )
-            )
+                    if feedforward_out
+                    else nn.Linear(
+                        self.hidden_dim + self.scalar_input_dim + scalar_vector_frame_dim,
+                        self.scalar_output_dim,
+                        )
+                )
+            elif self.input_type == self.PR_TYPE:
+                scalar_vector_frame_dim = (scalarization_vectorization_output_dim * 6 + 3 * 4) * 3
+                self.scalar_out = (
+                    nn.Sequential(
+                        nn.Linear(
+                            self.hidden_dim
+                            + self.scalar_input_dim
+                            + scalar_vector_frame_dim,
+                            self.scalar_output_dim,
+                        ),
+                        get_activations(scalar_out_nonlinearity),
+                        nn.Linear(self.scalar_output_dim, self.scalar_output_dim),
+                    )
+                    if feedforward_out
+                    else nn.Linear(
+                        self.hidden_dim + self.scalar_input_dim + scalar_vector_frame_dim,
+                        self.scalar_output_dim,
+                    )
+                )
     @staticmethod
     def get_sse_edge_index_and_mask(edge_index, node_to_sse_mapping, must_between_sse=True):
         cell_edge_index = map_to_cell_index(edge_index, node_to_sse_mapping)
@@ -84,6 +103,7 @@ class TCP(GCP):
         node_mask: Optional[Bool[torch.Tensor, "n_nodes"]] = None,
         cell_frames: Optional[Float[torch.Tensor, "batch_num_cells 3 3"]] = None,
         pr_frames: Optional[Float[torch.Tensor, "batch_num_prs 3 3"]] = None,
+        **kwargs
     ) -> Float[torch.Tensor, "effective_batch_num_entities out_scalar_dim"]:
         row, col = edge_index[0], edge_index[1]
         input_type = self.input_type
@@ -131,7 +151,10 @@ class TCP(GCP):
         elif input_type == self.PR_TYPE:
             if pr_frames is None:
                 raise ValueError(f"pr_frames must be provided for PR input type: {input_type}")
-            local_scalar_rep_i = torch.bmm(vector_rep_i, pr_frames).reshape(vector_rep_i.shape[0], -1)
+            batch = kwargs.get("batch", None)
+            if batch is None:
+                raise ValueError(f"batch must be provided to scalarization_kwargs for PR input type: {kwargs}")
+            local_scalar_rep_i = torch.concat([get_scalar_rep(batch, vector_rep, 3, to_rank) for to_rank in [0, 1, 2]], dim=1)
 
         elif input_type == self.NODE_TYPE or input_type == self.EDGE_TYPE:
             if node_mask is not None:
@@ -193,6 +216,7 @@ class TCP(GCP):
         node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
         node_pos: Optional[Float[torch.Tensor, "n_nodes 3"]] = None,
         node_to_sse_mapping: Optional[Int64[torch.Tensor, "n_nodes batch_num_cells"]] = None,
+        scalarization_kwargs: Optional[Dict] = None,
     ) -> Union[
         Tuple[
             Float[torch.Tensor, "batch_num_entities new_scalar_dim"],
@@ -210,6 +234,8 @@ class TCP(GCP):
 
             # curate direction-robust and (by default) chirality-aware scalar geometric features
             vector_down_frames_hidden_rep = self.vector_down_frames(v_pre)
+            if scalarization_kwargs is None:
+                scalarization_kwargs = {}
             scalar_hidden_rep = self.scalarize(
                 vector_down_frames_hidden_rep.transpose(-1, -2),
                 edge_index,
@@ -221,6 +247,7 @@ class TCP(GCP):
                 pr_frames=pr_frames,
                 node_pos=node_pos,
                 node_to_sse_mapping=node_to_sse_mapping,
+                **scalarization_kwargs,
             )
             merged = torch.cat((merged, scalar_hidden_rep), dim=-1)
         else:
@@ -354,6 +381,7 @@ class TCPEmbedding(GCPEmbedding):
             frames=batch.f_ij,
             pr_frames=batch.pr_frames,
             node_mask=getattr(batch, "mask", None),
+            scalarization_kwargs={"batch": batch}
         )
 
         if not self.pre_norm:
@@ -701,6 +729,7 @@ class TCPInteractions(GCPInteractions):
     @jaxtyped(typechecker=typechecker)
     def forward(
             self,
+            batch,
             node_rep: Tuple[
                 Float[torch.Tensor, "batch_num_nodes node_hidden_dim"],
                 Float[torch.Tensor, "batch_num_nodes m 3"],
@@ -844,6 +873,7 @@ class TCPInteractions(GCPInteractions):
                 edge_index,
                 frames=frames,
                 pr_frames=pr_frames,
+                scalarization_kwargs={"batch": batch}
             )
 
         # apply GCP dropout

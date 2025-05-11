@@ -197,9 +197,11 @@ class TCPNetModel(GCPNetModel):
         )
 
         # Craft complete local frames corresponding to each edge
-        batch.f_ij = self.localize(batch, rank=1)
-        batch.f_ij_cell = self.localize(batch, rank=2)
-        batch.pr_frames = self.localize(batch, rank=3)
+        batch.frame_dict = {rank: localize(batch, rank, frame_type='pca') for rank in [0, 1, 2, 3]}
+        batch.com_dict = {rank: batch.sse_cell_complex.get_com(rank) for rank in [0, 1, 2, 3]}
+        batch.f_ij = batch.frame_dict[1]
+        batch.f_ij_cell = batch.frame_dict[2]
+        batch.pr_frames = batch.frame_dict[3]
 
         # Embed node and edge input features
         (h, chi), (e, xi), (c, rho), (p, pi) = self.tcp_embedding(batch)
@@ -207,6 +209,7 @@ class TCPNetModel(GCPNetModel):
         # Update graph features using a series of geometric message-passing layers
         for layer in self.interaction_layers:
             (h, chi), batch.pos, (c, rho), (p, pi)  = layer(
+                batch,
                 node_rep=ScalarVector(h, chi),
                 edge_rep=ScalarVector(e, xi),
                 sse_rep=ScalarVector(c, rho),
@@ -256,7 +259,7 @@ class TCPNetModel(GCPNetModel):
 
         graph_out = self.readout[0](ScalarVector(p, pi))
         graph_out = self.readout[1](
-            graph_out, batch.edge_index, frames=batch.f_ij, pr_frames=batch.pr_frames
+            graph_out, batch.edge_index, frames=batch.f_ij, pr_frames=batch.pr_frames, scalarization_kwargs={"batch": batch}
         )  # e.g., GCP((h, chi)) -> h'
 
         encoder_outputs["node_embedding"] = out

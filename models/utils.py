@@ -469,3 +469,24 @@ def sv_apply_proj(sv: ScalarVector, proj_s: torch.nn.Module, proj_v: torch.nn.Mo
     s = proj_s(s)
     v = proj_v(v.transpose(-1, -2)).transpose(-1, -2)
     return ScalarVector(s, v)
+
+def get_scalar_rep(batch, from_rank_vec_attr, from_rank, to_rank):
+    incidence_matrix = batch.sse_cell_complex.calculator.eval(f'B{from_rank}_{to_rank}.T' if from_rank < to_rank else f'B{to_rank}_{from_rank}')
+    to_frames = batch.frame_dict[to_rank][incidence_matrix.indices()[0]]
+    from_frames = batch.frame_dict[from_rank]
+    vector_rep_i = from_rank_vec_attr[incidence_matrix.indices()[1]]
+    r_com_i = (batch.com_dict[from_rank][incidence_matrix.indices()[1]] - batch.com_dict[to_rank][incidence_matrix.indices()[0]]).unsqueeze(1)
+    vector_rep_i = torch.concat([
+        vector_rep_i,
+        r_com_i,
+        torch.cross(r_com_i, vector_rep_i, dim=-1),
+        from_frames[incidence_matrix.indices()[1]].transpose(-1, -2)
+    ], dim=1)
+    local_scalar_rep_i = torch.bmm(vector_rep_i, to_frames).reshape(vector_rep_i.shape[0], -1)
+    return torch_scatter.scatter(
+        local_scalar_rep_i,
+        incidence_matrix.indices()[1],
+        dim=0,
+        dim_size=incidence_matrix.size()[1],
+        reduce="mean",
+    )
