@@ -13,8 +13,11 @@ class Attach3Di(T.BaseTransform):
         self.encoder = mini3di.Encoder()
 
     def __call__(self, data):
-        coords = data.coords.numpy().copy()
-        coords[coords == 1e-5] = float('nan')
+        if hasattr(data, "threeDi_type"):
+            return data
+        coords_tensor = data.coords.clone()          # 1) clone on whatever device coords lives
+        coords_tensor[coords_tensor == 1e-5] = float("nan")
+        coords = coords_tensor.cpu().numpy()         # 2) transfer to host, yields a view
 
         out = self.encoder.encode_atoms(
             ca=coords[:, ATOM_NUMBERING_MODIFIED["CA"]],
