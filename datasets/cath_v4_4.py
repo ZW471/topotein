@@ -6,6 +6,7 @@ import tarfile
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Literal, Optional
+from Bio.PDB import PDBParser, PDBIO
 
 import omegaconf
 import torch
@@ -30,6 +31,11 @@ def _process_single_pdb(args):
         return pdb_path.name, "skipped", None
 
     try:
+        parser = PDBParser(QUIET=True)
+        io = PDBIO()
+        structure = parser.get_structure(str(pdb_path.stem), pdb_path)
+        io.set_structure(structure)
+        io.save(str(pdb_path))
         prot = Protein().from_pdb_file(str(pdb_path))
         torch.save(prot, str(out_path))
         return pdb_path.name, "converted", None
