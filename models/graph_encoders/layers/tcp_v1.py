@@ -61,7 +61,7 @@ class TCP(GCP):
                         )
                 )
             elif self.input_type == self.PR_TYPE:
-                scalar_vector_frame_dim = (scalarization_vectorization_output_dim * 6 + 3 * 4) * 3
+                scalar_vector_frame_dim = (scalarization_vectorization_output_dim * 6 + 3 * 4) * 2
                 self.scalar_out = (
                     nn.Sequential(
                         nn.Linear(
@@ -154,7 +154,7 @@ class TCP(GCP):
             batch = kwargs.get("batch", None)
             if batch is None:
                 raise ValueError(f"batch must be provided to scalarization_kwargs for PR input type: {kwargs}")
-            local_scalar_rep_i = torch.concat([get_scalar_rep(batch, vector_rep, 3, to_rank) for to_rank in [0, 1, 2]], dim=1)
+            local_scalar_rep_i = torch.concat([get_scalar_rep(batch, vector_rep, 3, to_rank) for to_rank in [0, 2]], dim=1)
 
         elif input_type == self.NODE_TYPE or input_type == self.EDGE_TYPE:
             if node_mask is not None:
@@ -506,7 +506,7 @@ class TCPMessagePassing(GCPMessagePassing):
 
 class TCPInteractions(GCPInteractions):
     def __init__(self, node_dims: ScalarVector, edge_dims: ScalarVector, sse_dims: ScalarVector, pr_dims: ScalarVector, cfg: DictConfig, layer_cfg: DictConfig,
-                 dropout: float = 0.0, nonlinearities: Optional[Tuple[Any, Any]] = None):
+                 dropout: float = 0.0, nonlinearities: Optional[Tuple[Any, Any]] = None, use_pr_pooling: bool = False):
         super().__init__(node_dims, edge_dims, cfg, layer_cfg, dropout, nonlinearities)
         self.interaction = TCPMessagePassing(
             ScalarVector(
@@ -522,6 +522,7 @@ class TCPInteractions(GCPInteractions):
         )
 
 
+        self.pr_pooling = use_pr_pooling
         # config instantiations
         ff_cfg = copy(cfg)
         ff_cfg.nonlinearities = nonlinearities
@@ -632,50 +633,51 @@ class TCPInteractions(GCPInteractions):
 
         self.cell_ff_network = nn.ModuleList(ff_interaction_layers)
 
-        hidden_dims = (
-            (pr_dims.scalar, pr_dims.vector)
-            if layer_cfg.num_feedforward_layers == 1
-            else (4 * pr_dims.scalar, 2 * pr_dims.vector)
-        )
-        ff_interaction_layers = [
-            ff_TCP(
-                (
-                    pr_dims.scalar + node_dims.scalar + sse_dims.scalar,
-                    pr_dims.vector + node_dims.vector + sse_dims.vector),
-                hidden_dims,
-                input_type=TCP.PR_TYPE,
-                nonlinearities=("none", "none")
+        if self.pr_pooling:
+            hidden_dims = (
+                (pr_dims.scalar, pr_dims.vector)
                 if layer_cfg.num_feedforward_layers == 1
-                else cfg.nonlinearities,
-                feedforward_out=layer_cfg.num_feedforward_layers == 1,
-                enable_e3_equivariance=cfg.enable_e3_equivariance,
+                else (4 * pr_dims.scalar, 2 * pr_dims.vector)
             )
-        ]
-
-        interaction_layers = [
-            ff_TCP(
-                hidden_dims,
-                hidden_dims,
-                input_type=TCP.PR_TYPE,
-                enable_e3_equivariance=cfg.enable_e3_equivariance,
-            )
-            for _ in range(layer_cfg.num_feedforward_layers - 2)
-        ]
-        ff_interaction_layers.extend(interaction_layers)
-
-        if layer_cfg.num_feedforward_layers > 1:
-            ff_interaction_layers.append(
+            ff_interaction_layers = [
                 ff_TCP(
+                    (
+                        pr_dims.scalar + node_dims.scalar + sse_dims.scalar,
+                        pr_dims.vector + node_dims.vector + sse_dims.vector),
                     hidden_dims,
-                    pr_dims,
                     input_type=TCP.PR_TYPE,
-                    nonlinearities=("none", "none"),
-                    feedforward_out=True,
+                    nonlinearities=("none", "none")
+                    if layer_cfg.num_feedforward_layers == 1
+                    else cfg.nonlinearities,
+                    feedforward_out=layer_cfg.num_feedforward_layers == 1,
                     enable_e3_equivariance=cfg.enable_e3_equivariance,
                 )
-            )
+            ]
 
-        self.pr_ff_network = nn.ModuleList(ff_interaction_layers)
+            interaction_layers = [
+                ff_TCP(
+                    hidden_dims,
+                    hidden_dims,
+                    input_type=TCP.PR_TYPE,
+                    enable_e3_equivariance=cfg.enable_e3_equivariance,
+                )
+                for _ in range(layer_cfg.num_feedforward_layers - 2)
+            ]
+            ff_interaction_layers.extend(interaction_layers)
+
+            if layer_cfg.num_feedforward_layers > 1:
+                ff_interaction_layers.append(
+                    ff_TCP(
+                        hidden_dims,
+                        pr_dims,
+                        input_type=TCP.PR_TYPE,
+                        nonlinearities=("none", "none"),
+                        feedforward_out=True,
+                        enable_e3_equivariance=cfg.enable_e3_equivariance,
+                    )
+                )
+
+            self.pr_ff_network = nn.ModuleList(ff_interaction_layers)
 
         self.attention_head_num = 1
         self.attention_hidden_dim = None
@@ -704,27 +706,28 @@ class TCPInteractions(GCPInteractions):
             disable_attention=self.disable_attention,
         )
 
-        self.attentive_node2pr = GeometryLocationAttention(
-            from_sv_dim=node_dims,
-            to_sv_dim=pr_dims,
-            num_heads=self.attention_head_num,
-            hidden_dim=self.attention_hidden_dim,
-            activation='leaky_relu',
-            concat=True,
-            higher_to_lower=False,
-            disable_attention=self.disable_attention,
-        )
+        if self.pr_pooling:
+            self.attentive_node2pr = GeometryLocationAttention(
+                from_sv_dim=node_dims,
+                to_sv_dim=pr_dims,
+                num_heads=self.attention_head_num * 4,
+                hidden_dim=self.attention_hidden_dim,
+                activation='leaky_relu',
+                concat=True,
+                higher_to_lower=False,
+                disable_attention=False,
+            )
 
-        self.attentive_sse2pr = GeometryLocationAttention(
-            from_sv_dim=sse_dims,
-            to_sv_dim=pr_dims,
-            num_heads=self.attention_head_num,
-            hidden_dim=self.attention_hidden_dim,
-            activation='leaky_relu',
-            concat=True,
-            higher_to_lower=False,
-            disable_attention=self.disable_attention,
-        )
+            self.attentive_sse2pr = GeometryLocationAttention(
+                from_sv_dim=sse_dims,
+                to_sv_dim=pr_dims,
+                num_heads=self.attention_head_num * 4,
+                hidden_dim=self.attention_hidden_dim,
+                activation='leaky_relu',
+                concat=True,
+                higher_to_lower=False,
+                disable_attention=False,
+            )
 
     @jaxtyped(typechecker=typechecker)
     def forward(
@@ -774,14 +777,16 @@ class TCPInteractions(GCPInteractions):
 
         node_to_sse_mapping = ccc.incidence_matrix(0, 2)
         sse_to_node_mapping = ccc.calculator.eval("B0_2.T")
-        node_to_pr_mapping = ccc.incidence_matrix(0, 3)
-        sse_to_pr_mapping = ccc.incidence_matrix(2, 3)
+        if self.pr_pooling:
+            node_to_pr_mapping = ccc.incidence_matrix(0, 3)
+            sse_to_pr_mapping = ccc.incidence_matrix(2, 3)
 
         # apply GCP normalization (1)
         if self.pre_norm:
             node_rep = self.gcp_norm["0"](node_rep)
             sse_rep = self.gcp_norm["2"](sse_rep)
-            pr_rep = self.gcp_norm["3"](pr_rep)
+            if self.pr_pooling:
+                pr_rep = self.gcp_norm["3"](pr_rep)
 
         # forward propagate with interaction module
         hidden_residual, hidden_residual_cell = self.interaction(
@@ -846,46 +851,48 @@ class TCPInteractions(GCPInteractions):
                 node_inputs=True,
                 node_mask=node_mask,
             )
-        pr_com = ccc.get_com(3)
-        node_rep_to_pr = self.attentive_node2pr(
-            from_rank_sv=hidden_residual,
-            to_rank_sv=pr_rep,
-            incidence_matrix=node_to_pr_mapping,
-            from_frame=node_frames,
-            to_frame=pr_frames,
-            from_pos=node_pos,
-            to_pos=pr_com[node_to_pr_mapping.indices()[1]]
-        )
-
-        sse_rep_to_pr = self.attentive_sse2pr(
-            from_rank_sv=sse_hidden_residual,
-            to_rank_sv=pr_rep,
-            incidence_matrix=sse_to_pr_mapping,
-            from_frame=sse_frames,
-            to_frame=pr_frames,
-            from_pos=sse_com,
-            to_pos=pr_com[sse_to_pr_mapping.indices()[1]]
-        )
-        pr_hidden_residual = ScalarVector(*pr_rep.concat((node_rep_to_pr, sse_rep_to_pr)))
-        for module in self.pr_ff_network:
-            pr_hidden_residual = module(
-                pr_hidden_residual,
-                edge_index,
-                frames=frames,
-                pr_frames=pr_frames,
-                scalarization_kwargs={"batch": batch}
+        if self.pr_pooling:
+            pr_com = ccc.get_com(3)
+            node_rep_to_pr = self.attentive_node2pr(
+                from_rank_sv=hidden_residual,
+                to_rank_sv=pr_rep,
+                incidence_matrix=node_to_pr_mapping,
+                from_frame=node_frames,
+                to_frame=pr_frames,
+                from_pos=node_pos,
+                to_pos=pr_com[node_to_pr_mapping.indices()[1]]
             )
+
+            sse_rep_to_pr = self.attentive_sse2pr(
+                from_rank_sv=sse_hidden_residual,
+                to_rank_sv=pr_rep,
+                incidence_matrix=sse_to_pr_mapping,
+                from_frame=sse_frames,
+                to_frame=pr_frames,
+                from_pos=sse_com,
+                to_pos=pr_com[sse_to_pr_mapping.indices()[1]]
+            )
+            pr_hidden_residual = ScalarVector(*pr_rep.concat((node_rep_to_pr, sse_rep_to_pr)))
+            for module in self.pr_ff_network:
+                pr_hidden_residual = module(
+                    pr_hidden_residual,
+                    edge_index,
+                    frames=frames,
+                    pr_frames=pr_frames,
+                    scalarization_kwargs={"batch": batch}
+                )
+            pr_rep = pr_rep + self.gcp_dropout["3"](pr_hidden_residual)
 
         # apply GCP dropout
         node_rep = node_rep + self.gcp_dropout["0"](hidden_residual)
         sse_rep = sse_rep + self.gcp_dropout["2"](sse_hidden_residual)
-        pr_rep = pr_rep + self.gcp_dropout["3"](pr_hidden_residual)
 
         # apply GCP normalization (2)
         if not self.pre_norm:
             node_rep = self.gcp_norm["0"](node_rep)
             sse_rep = self.gcp_norm["2"](sse_rep)
-            pr_rep = self.gcp_norm["3"](pr_rep)
+            if self.pr_pooling:
+                pr_rep = self.gcp_norm["3"](pr_rep)
 
         # update only unmasked node representations and residuals
         if node_mask is not None:

@@ -119,7 +119,7 @@ class TCPNetModel(GCPNetModel):
         )
 
         # Message-passing layers
-        self.interaction_layers = nn.ModuleList(
+        interaction_layers = [
             TCPInteractions(
                 self.node_dims,
                 self.edge_dims,
@@ -129,7 +129,22 @@ class TCPNetModel(GCPNetModel):
                 layer_cfg=layer_cfg,
                 dropout=model_cfg.dropout,
             )
-            for _ in range(model_cfg.num_layers)
+            for _ in range(model_cfg.num_layers - 1)
+        ]
+        interaction_layers.append(
+            TCPInteractions(
+                self.node_dims,
+                self.edge_dims,
+                self.sse_dims,
+                self.pr_dims,
+                cfg=module_cfg,
+                layer_cfg=layer_cfg,
+                dropout=model_cfg.dropout,
+                use_pr_pooling=True
+            )
+        )
+        self.interaction_layers = nn.ModuleList(
+            interaction_layers
         )
 
         if self.predict_node_rep:
