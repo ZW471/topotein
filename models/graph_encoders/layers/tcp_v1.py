@@ -480,7 +480,7 @@ class TCPMessagePassing(GCPMessagePassing):
             frames: Float[torch.Tensor, "batch_num_edges 3 3"],
             node_to_sse_mapping: torch.Tensor = None,
             node_mask: Optional[Bool[torch.Tensor, "batch_num_nodes"]] = None,
-    ) -> Tuple[ScalarVector, ScalarVector]:
+    ) -> Tuple[ScalarVector, ScalarVector, ScalarVector]:
         message = self.message(
             node_rep, edge_rep, cell_rep, edge_index, frames, node_to_sse_mapping, node_mask
         )
@@ -498,7 +498,7 @@ class TCPMessagePassing(GCPMessagePassing):
         cell_aggregate = ScalarVector.recover(cell_aggregate, self.vector_output_dim)
 
 
-        return node_aggregate, cell_aggregate
+        return node_aggregate, cell_aggregate, ScalarVector.recover(message, self.vector_output_dim)
 
 
 
@@ -642,8 +642,8 @@ class TCPInteractions(GCPInteractions):
             ff_interaction_layers = [
                 ff_TCP(
                     (
-                        pr_dims.scalar + node_dims.scalar + sse_dims.scalar,
-                        pr_dims.vector + node_dims.vector + sse_dims.vector),
+                        pr_dims.scalar + node_dims.scalar * 2 + sse_dims.scalar,
+                        pr_dims.vector + node_dims.vector * 2 + sse_dims.vector),
                     hidden_dims,
                     input_type=TCP.PR_TYPE,
                     nonlinearities=("none", "none")
@@ -729,6 +729,17 @@ class TCPInteractions(GCPInteractions):
                 disable_attention=False,
             )
 
+            self.attentive_edge2pr = GeometryLocationAttention(
+                from_sv_dim=node_dims,
+                to_sv_dim=pr_dims,
+                num_heads=self.attention_head_num * 4,
+                hidden_dim=self.attention_hidden_dim,
+                activation='leaky_relu',
+                concat=True,
+                higher_to_lower=False,
+                disable_attention=False,
+            )
+
     @jaxtyped(typechecker=typechecker)
     def forward(
             self,
@@ -780,6 +791,7 @@ class TCPInteractions(GCPInteractions):
         if self.pr_pooling:
             node_to_pr_mapping = ccc.incidence_matrix(0, 3)
             sse_to_pr_mapping = ccc.incidence_matrix(2, 3)
+            edge_to_pr_mapping = ccc.incidence_matrix(1, 3)
 
         # apply GCP normalization (1)
         if self.pre_norm:
@@ -789,7 +801,7 @@ class TCPInteractions(GCPInteractions):
                 pr_rep = self.gcp_norm["3"](pr_rep)
 
         # forward propagate with interaction module
-        hidden_residual, hidden_residual_cell = self.interaction(
+        hidden_residual, hidden_residual_cell, edge_message = self.interaction(
             node_rep=node_rep,
             edge_rep=edge_rep,
             cell_rep=sse_rep,
@@ -863,6 +875,16 @@ class TCPInteractions(GCPInteractions):
                 to_pos=pr_com[node_to_pr_mapping.indices()[1]]
             )
 
+            edge_rep_to_pr = self.attentive_edge2pr(
+                from_rank_sv=edge_message,
+                to_rank_sv=pr_rep,
+                incidence_matrix=edge_to_pr_mapping,
+                from_frame=frames,
+                to_frame=pr_frames,
+                from_pos=ccc.get_com(1),
+                to_pos=pr_com[edge_to_pr_mapping.indices()[1]]
+            )
+
             sse_rep_to_pr = self.attentive_sse2pr(
                 from_rank_sv=sse_hidden_residual,
                 to_rank_sv=pr_rep,
@@ -872,7 +894,7 @@ class TCPInteractions(GCPInteractions):
                 from_pos=sse_com,
                 to_pos=pr_com[sse_to_pr_mapping.indices()[1]]
             )
-            pr_hidden_residual = ScalarVector(*pr_rep.concat((node_rep_to_pr, sse_rep_to_pr)))
+            pr_hidden_residual = ScalarVector(*pr_rep.concat((node_rep_to_pr, sse_rep_to_pr, edge_rep_to_pr)))
             for module in self.pr_ff_network:
                 pr_hidden_residual = module(
                     pr_hidden_residual,
