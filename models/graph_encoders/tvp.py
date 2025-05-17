@@ -174,7 +174,7 @@ class TVPGNNModel(torch.nn.Module):
         h_SSE = self.W_sse((batch.sse_attr, batch.sse_vector_attr))
 
         for layer in self.layers:
-            h_V = layer(batch.sse_cell_complex, h_V, batch.edge_index, h_E, h_SSE)
+            h_V, h_SSE = layer(batch.sse_cell_complex, h_V, batch.edge_index, h_E, h_SSE)
 
         out = self.W_out(h_V)
 

@@ -15,7 +15,8 @@ import functools
 import torch
 import torch.nn.functional as F
 import torch_scatter
-from topotein.models.utils import lift_features_with_padding
+from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
+from topotein.models.utils import lift_features_with_padding, sv_aggregate
 from torch import nn
 from torch_geometric.nn import MessagePassing
 
@@ -402,15 +403,15 @@ class TVPConvLayer(nn.Module):
         self.sse_norm = nn.ModuleList([LayerNorm(sse_dims) for _ in range(2)])
         self.dropout = nn.ModuleList([Dropout(drop_rate) for _ in range(2)])
         self.sse_dropout = nn.ModuleList([Dropout(drop_rate) for _ in range(2)])
-
+        sse_down_dims = (sse_dims[0] // 8, sse_dims[1] // 8)
         ff_func = []
         if n_feedforward == 1:
             ff_func.append(
-                GVP_(tuple_sum(node_dims, node_dims), node_dims, activations=(None, None))
+                GVP_(tuple_sum(node_dims, sse_down_dims), node_dims, activations=(None, None))
             )
         else:
             hid_dims = 4 * node_dims[0], 2 * node_dims[1]
-            ff_func.append(GVP_(tuple_sum(node_dims, node_dims), hid_dims))
+            ff_func.append(GVP_(tuple_sum(node_dims, sse_down_dims), hid_dims))
             ff_func.extend(
                 GVP_(hid_dims, hid_dims) for _ in range(n_feedforward - 2)
             )
@@ -432,6 +433,10 @@ class TVPConvLayer(nn.Module):
         self.sse_ff_func = nn.Sequential(*ff_func)
 
         self.residual = residual
+
+        self.sse_down = GVP_(sse_dims, sse_down_dims, activations=(None, None))
+        self.sse_up = GVP_(sse_down_dims, sse_dims, activations=(None, None))
+        self.sse_gate = GVP_(node_dims, sse_dims, activations=(None, None))
 
     def forward(
         self, ccc, x, edge_index, edge_attr, sse_attr, autoregressive_x=None, node_mask=None
@@ -482,9 +487,10 @@ class TVPConvLayer(nn.Module):
             if self.residual
             else dh
         )
+        z = self.sse_down(sse_x)
         x_merged = (
-            torch.cat([x[0], lift_features_with_padding(sse_x[0], N0_2)], dim=1),
-            torch.cat([x[1], lift_features_with_padding(sse_x[1], N0_2)], dim=1),
+            torch.cat([x[0], lift_features_with_padding(z[0], N0_2)], dim=1),
+            torch.cat([x[1], lift_features_with_padding(z[1], N0_2)], dim=1),
         )
         dh = self.ff_func(x_merged)
         x = (
@@ -492,8 +498,15 @@ class TVPConvLayer(nn.Module):
             if self.residual
             else dh
         )
+        sse_x = self.sse_up(z)
+        sse_gate_alpha = self.sse_gate(x)
+        sse_gate_alpha = sv_aggregate(ScalarVector(*sse_gate_alpha), N0_2)
+        sse_x = (
+            sse_x[0] * torch.sigmoid(sse_gate_alpha[0]),
+            torch.einsum("bfd, bf->bfd", sse_x[1], torch.sigmoid(_norm_no_nan(sse_gate_alpha[1])))
+        )
 
         if node_mask is not None:
             x_[0][node_mask], x_[1][node_mask] = x[0], x[1]
             x = x_
-        return x
+        return x, sse_x
