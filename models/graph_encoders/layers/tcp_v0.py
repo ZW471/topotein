@@ -657,7 +657,7 @@ class TCPInteractions(GCPInteractions):
             dim_size=node_to_sse_mapping.shape[1],
             reduce="mean",
         ) for rep in edge_rep.vs()])
-        cell_hidden_residual = ScalarVector(*hidden_residual_cell.concat((cell_rep, node_rep_agg, edge_rep_agg)))  # c_i || h_i || e_i || m_e
+        cell_hidden_residual = ScalarVector(*hidden_residual_cell.concat((cell_rep, node_rep_agg, edge_rep_agg)))  # m_ij || c_i || h_i || e_i
         # propagate with cell feedforward layers
         for module in self.cell_ff_network:
             cell_hidden_residual = module(
@@ -670,8 +670,12 @@ class TCPInteractions(GCPInteractions):
                 node_to_sse_mapping=node_to_sse_mapping
             )
 
+        sse_rep = cell_rep + self.gcp_dropout[1](cell_hidden_residual)
+        if not self.pre_norm:
+            sse_rep = self.gcp_norm[1](sse_rep)
+
         sse_rep_to_node = self.attentive_sse2node(
-            from_rank_sv=cell_hidden_residual,
+            from_rank_sv=sse_rep,
             to_rank_sv=hidden_residual,
             incidence_matrix=sse_to_node_mapping,
             from_frame=cell_frames,
@@ -693,12 +697,10 @@ class TCPInteractions(GCPInteractions):
 
         # apply GCP dropout
         node_rep = node_rep + self.gcp_dropout[0](hidden_residual)
-        sse_rep = cell_rep + self.gcp_dropout[1](cell_hidden_residual)
 
         # apply GCP normalization (2)
         if not self.pre_norm:
             node_rep = self.gcp_norm[0](node_rep)
-            sse_rep = self.gcp_norm[1](sse_rep)
 
         # update only unmasked node representations and residuals
         if node_mask is not None:
