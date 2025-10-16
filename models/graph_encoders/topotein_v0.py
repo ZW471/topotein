@@ -7,7 +7,7 @@ from toponetx import CellComplex
 from torch import nn
 
 from proteinworkshop.models.utils import get_aggregation
-from proteinworkshop.types import EncoderOutput
+from proteinworkshop.custom_types import EncoderOutput
 
 import hydra
 

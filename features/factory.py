@@ -13,7 +13,7 @@ from topotein.features.sse_features import compute_scalar_sse_features, compute_
 from topotein.features.cell_complex import compute_sses, compute_sses_pure_torch
 from topotein.features.neighborhoods import compute_neighborhoods
 from topotein.features.sse import sse_onehot
-from proteinworkshop.types import ScalarNodeFeature, VectorNodeFeature, ScalarEdgeFeature, VectorEdgeFeature
+from proteinworkshop.custom_types import ScalarNodeFeature, VectorNodeFeature, ScalarEdgeFeature, VectorEdgeFeature
 from topotein.types import ScalarSSEFeature, VectorSSEFeature, ScalarProteinFeature, VectorProteinFeature
 
 

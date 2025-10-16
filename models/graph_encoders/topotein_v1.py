@@ -5,7 +5,7 @@ from torch import nn
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.graph_encoders.layers import gcp
 from proteinworkshop.models.utils import get_activations, centralize
-from proteinworkshop.types import EncoderOutput
+from proteinworkshop.custom_types import EncoderOutput
 from topotein.models.graph_encoders.layers.topotein_net.embedding import TPPEmbedding
 from topotein.models.graph_encoders.layers.topotein_net.interaction import TopoteinInteraction, TPPInteraction
 from topotein.models.graph_encoders.layers.topotein_net.tpp import TPP

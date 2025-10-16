@@ -6,7 +6,7 @@ from torch import Tensor
 from torch_geometric.data import Data
 from torch_geometric.nn import global_add_pool
 
-from proteinworkshop.types import EncoderOutput
+from proteinworkshop.custom_types import EncoderOutput
 from topotein.models.graph_encoders.sotas.etnn.layers import ETNNLayer
 from topotein.models.graph_encoders.sotas.etnn import utils, invariants
 

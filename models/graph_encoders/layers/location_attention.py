@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch_scatter import scatter_sum, scatter_softmax
 from proteinworkshop.models.utils import get_activations
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
-from proteinworkshop.types import ActivationType
+from proteinworkshop.custom_types import ActivationType
 from topotein.models.utils import get_com, sv_attention, sv_apply_proj, sv_aggregate
 
 
