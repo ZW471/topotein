@@ -1,16 +1,13 @@
 from typing import List, Union
-
-import networkx as nx
 import torch
 from graphein.protein.tensor.data import ProteinBatch
-from toponetx import CellComplex
 from torch_geometric.data import Batch
 
 from proteinworkshop.features.edge_features import compute_scalar_edge_features, compute_vector_edge_features
 from proteinworkshop.features.factory import ProteinFeaturiser, StructureRepresentation
 from topotein.features.protein_features import compute_vector_protein_features, compute_scalar_protein_features
 from topotein.features.sse_features import compute_scalar_sse_features, compute_vector_sse_features
-from topotein.features.cell_complex import compute_sses, compute_sses_pure_torch
+from topotein.features.cell_complex import compute_sses_pure_torch
 from topotein.features.neighborhoods import compute_neighborhoods
 from topotein.features.sse import sse_onehot
 from proteinworkshop.custom_types import ScalarNodeFeature, VectorNodeFeature, ScalarEdgeFeature, VectorEdgeFeature
@@ -79,32 +76,7 @@ class TopoteinFeaturiser(ProteinFeaturiser):
                 batch.sse = torch.nn.functional.one_hot(batch.sse, num_classes=len(self.sse_types))
 
             else:
-                # sse: onehot type of sse for groups
-                # sse_cell_index: cells that represents sses
-                # sse_cell_complex: the whole cell complex that contains structural information of this higher-order graph
-                batch.sse, batch.sse_cell_index, batch.sse_cell_complex = compute_sses(
-                    batch, self.sse_types, directed_edges=self.directed_edges
-                )
-                batch.num_sse_type = len(self.sse_types)
-                batch.sse_cell_index_simple = torch.tensor(
-                    [(t[0], t[-1]) for t in batch.sse_cell_index],
-                    dtype=torch.long,
-                    device=batch.x.device,
-                ).T
-
-
-                # recreate the edge indices
-                cc: CellComplex = batch.sse_cell_complex
-                edge_attr_dict = nx.get_edge_attributes(cc._G, "edge_type", default=batch.num_relation)
-                device = batch.x.device
-                batch.edge_index = torch.tensor(list(edge_attr_dict.keys()), dtype=torch.long, device=device).T
-                batch.edge_type = torch.tensor(list(edge_attr_dict.values()), device=device).unsqueeze(0)
-                batch.num_relation += 1  # a new kind of edge is introduced by sse cells (connecting SSE start with end)
-
-                # note: this does not align with neighborhood matrices
-                # if not self.directed_edges:
-                #     batch.edge_index = torch.cat([batch.edge_index, batch.edge_index.flip([0])], dim=1)
-                #     batch.edge_type = torch.cat([batch.edge_type, batch.edge_type], dim=1)
+                raise NotImplementedError("Toponet implementation is no longer supported")
 
 
         # Scalar cell features

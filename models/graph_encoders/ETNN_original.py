@@ -1,14 +1,5 @@
-import hydra
 import torch
 from beartype.typing import Set
-from omegaconf import DictConfig
-from toponetx import CombinatorialComplex, CellComplex
-
-from proteinworkshop import constants
-from topomodelx.base.message_passing import MessagePassing
-from topomodelx.base.aggregation import Aggregation
-from topomodelx.utils.sparse import from_sparse
-from torch_scatter import scatter_add
 
 from proteinworkshop.models.utils import get_aggregation
 from topotein.models.graph_encoders.sotas.etnn.model import ETNNCore
@@ -65,32 +56,18 @@ class ETNNModel(torch.nn.Module):
 
         device = X.device
 
-        # ccc is taking way more time when compared to cell complex
-        # ccc: CombinatorialComplex = batch.sse_cell_complex.to_combinatorial_complex()
-        #
-        # N2_0 = from_sparse(ccc.incidence_matrix(rank=0, to_rank=2).T)
-        # N1_0 = from_sparse(ccc.incidence_matrix(rank=0, to_rank=1).T)
-        # N0_0_via_1 = from_sparse(ccc.adjacency_matrix(rank=0, via_rank=1))
-        # N0_0_via_2 = from_sparse(ccc.adjacency_matrix(rank=0, via_rank=2))
-        if self.debug:
-            cc: CellComplex = batch.sse_cell_complex
-            Bt = [from_sparse(cc.incidence_matrix(rank=i, signed=False).T).to(device) for i in range(1,3)]
-            N2_0 = (torch.sparse.mm(Bt[1], Bt[0]) / 2).coalesce()
-            N1_0 = Bt[0].coalesce()
-            N0_0_via_1 = from_sparse(cc.adjacency_matrix(rank=0, signed=False)).to(device)
-            N0_0_via_2 = torch.sparse.mm(N2_0.T, N2_0).coalesce()
-        else:
-            N2_0 = batch.N2_0
-            N1_0 = batch.N1_0
-            N0_0_via_1 = batch.N0_0_via_1
-            N0_0_via_2 = batch.N0_0_via_2
+        
+        N2_0 = batch.N2_0
+        N1_0 = batch.N1_0
+        N0_0_via_1 = batch.N0_0_via_1
+        N0_0_via_2 = batch.N0_0_via_2
 
-            N0_2 = batch.N0_2
-            N0_3 = batch.N0_3
-            N2_3 = batch.N2_3
-            N3_2 = batch.N3_2
-            N2_1_outer = batch.N2_1_outer
-            N1_2_outer = batch.N1_2_outer
+        N0_2 = batch.N0_2
+        N0_3 = batch.N0_3
+        N2_3 = batch.N2_3
+        N3_2 = batch.N3_2
+        N2_1_outer = batch.N2_1_outer
+        N1_2_outer = batch.N1_2_outer
 
         def cell_list(i, format="list"):
             all_nodes = torch.arange(0, batch.x.shape[0], device=device)
