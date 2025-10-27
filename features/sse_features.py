@@ -7,7 +7,6 @@ from graphein.protein.tensor.data import ProteinBatch
 from jaxtyping import jaxtyped
 from omegaconf import ListConfig
 from torch_geometric.data import Batch, Data
-import toponetx as tnx
 from torch_geometric.nn import PositionalEncoding
 from torch_scatter import scatter_mean, scatter_std
 
@@ -311,7 +310,7 @@ def consecutive_angle(
     return torch.stack([sin_prev, cos_prev, sin_next, cos_next], dim=1)
 
 @jaxtyped(typechecker=typechecker)
-def compute_sse_sizes(cell_complex: Union[tnx.CellComplex, TopoteinComplex]) -> torch.Tensor:
+def compute_sse_sizes(cell_complex: TopoteinComplex) -> torch.Tensor:
     """
     Compute the sizes of all cells within the provided cell complex.
 
@@ -326,10 +325,7 @@ def compute_sse_sizes(cell_complex: Union[tnx.CellComplex, TopoteinComplex]) -> 
         cell complex.
     :rtype: torch.Tensor
     """
-    if type(cell_complex) == tnx.CellComplex:
-
-        return torch.tensor(list(map(cell_complex.size, iter(cell_complex.cells))))
-    elif type(cell_complex) == TopoteinComplex:
+    if type(cell_complex) == TopoteinComplex:
         return cell_complex.laplacian_matrix(rank=2, via_rank=0).values()
     else:
         raise ValueError(f"Invalid cell complex type: {type(cell_complex)}")

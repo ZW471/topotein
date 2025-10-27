@@ -3,7 +3,7 @@ from torch import nn
 
 from proteinworkshop.models.graph_encoders.components.wrappers import ScalarVector
 from proteinworkshop.models.utils import get_activations
-from proteinworkshop.types import ActivationType
+from proteinworkshop.custom_types import ActivationType
 from topotein.models.utils import scalarize, tensorize
 
 

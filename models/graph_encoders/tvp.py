@@ -10,7 +10,7 @@ from torch_geometric.data import Batch
 import topotein.models.graph_encoders.layers.tvp as tvp
 from proteinworkshop.models.graph_encoders.components import blocks
 from proteinworkshop.models.utils import get_aggregation, get_activations
-from proteinworkshop.types import EncoderOutput, ActivationType
+from proteinworkshop.custom_types import EncoderOutput, ActivationType
 
 
 class TVPGNNModel(torch.nn.Module):

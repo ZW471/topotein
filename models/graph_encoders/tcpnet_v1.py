@@ -21,7 +21,7 @@ from proteinworkshop.models.utils import (
     get_aggregation,
 )
 from topotein.models.utils import localize
-from proteinworkshop.types import EncoderOutput
+from proteinworkshop.custom_types import EncoderOutput
 from topotein.models.graph_encoders.layers.tcp_v1 import TCPEmbedding, TCPInteractions, TCP
 
 

@@ -1,8 +1,6 @@
 import torch
 from lark import Lark, Transformer, v_args
 
-from topotein.features.topotein_complex import TopoteinComplex
-
 
 # --- Helper functions ---
 

@@ -1,5 +1,5 @@
 import torch
-from topomodelx import MessagePassing, Aggregation
+import torch.nn as nn
 from torch.nn import Sequential, Linear, Dropout
 from torch_scatter import scatter_min, scatter_add, scatter_mean
 
@@ -125,7 +125,7 @@ def intra_neighborhood_agg(M: torch.Tensor, msgs: torch.Tensor) -> torch.Tensor:
     return scatter_mean(msgs, M.indices()[0], dim=0, dim_size=M.size(0))
 
 
-class ETNNLayer(MessagePassing):
+class ETNNLayer(nn.Module):
     def __init__(self, emb_dim: int, edge_attr_dim: int = 2, sse_attr_dim: int = 4, dropout: float = 0.1,
                  activation: str = "silu", norm: str = "batch", position_update=False, **kwargs) -> None:
         super(ETNNLayer, self).__init__()
@@ -270,62 +270,3 @@ class ETNNLayer(MessagePassing):
         result_mean = result_sum / counts.clamp(min=1).unsqueeze(1)
 
         return result_mean
-
-#%%
-if __name__ == "__main__":
-    #%%
-    batch = torch.load("/Users/dricpro/PycharmProjects/Topotein/test/data/sample_batch/sample_featurised_batch_edge_processed_simple.pt", weights_only=False)
-    print(batch)
-    #%%
-    from toponetx import CellComplex
-    from topomodelx.utils.sparse import from_sparse
-
-    X = batch.pos
-    H0 = batch.x
-    H1 = batch.edge_attr
-    H2 = batch.sse_attr
-
-    device = X.device
-
-    cc: CellComplex = batch.sse_cell_complex
-    Bt = [from_sparse(cc.incidence_matrix(rank=i, signed=False).T).to(device) for i in range(1,3)]
-    N2_0 = (torch.sparse.mm(Bt[1], Bt[0]) / 2).coalesce()
-    N1_0 = Bt[0].coalesce()
-    N0_0_via_1 = from_sparse(cc.adjacency_matrix(rank=0, signed=False)).to(device)
-    N0_0_via_2 = torch.sparse.mm(N2_0.T, N2_0).coalesce()
-
-    #%%
-    emb = torch.randn(57, 512)
-    H0 = H0 @ emb
-    layer = ETNNLayer(emb_dim=512, edge_attr_dim=2, sse_attr_dim=4, dropout=0, activation="silu", norm="batch")
-    import time
-    tik = time.time()
-    H, pos = layer(X, H0, H1, H2, N0_0_via_1, N0_0_via_2, N2_0, N1_0)
-    tok = time.time()
-    print(f"Time taken: {tok-tik:.2f}s")
-    Q = torch.randn(3, 3)
-    t = torch.rand(3)
-    posQt = pos @ Q + t
-
-    QtH, QtPos = layer(X @ Q + t, H0, H1, H2, N0_0_via_1, N0_0_via_2, N2_0, N1_0)
-
-    assert torch.allclose(H, QtH, atol=10), f"Hidden state is not invariant to Q and t\n{H}\n{QtH}"
-    # assert torch.allclose(H, QtH, atol=1), f"Hidden state is not invariant to Q and t\n{H}\n{QtH}"
-    # assert torch.allclose(H, QtH, atol=.1), f"Hidden state is not invariant to Q and t\n{H}\n{QtH}"
-
-    assert torch.allclose(posQt, QtPos, atol=10), f"Position is not equivariant to Q and t\n{posQt}\n{QtPos}"
-    assert torch.allclose(posQt, QtPos, atol=1), f"Position is not equivariant to Q and t\n{posQt}\n{QtPos}"
-    assert torch.allclose(posQt, QtPos, atol=.1), f"Position is not equivariant to Q and t\n{posQt}\n{QtPos}"
-
-    print("All tests passed")
-
-    #%%
-    print(pos)
-    print(X)
-
-    #%%
-    (pos - X).abs().max()
-    #%%
-    (pos - X).abs().mean()
-    #%%
-    (pos - X).mean()
